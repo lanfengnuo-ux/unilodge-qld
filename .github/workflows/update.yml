@@ -1,0 +1,57 @@
+name: Update Room Report
+
+on:
+  schedule:
+    # 10:00 AM AEST = 00:00 UTC
+    - cron: '3 0 * * *'
+    # 15:00 PM AEST = 05:00 UTC
+    - cron: '7 5 * * *'
+  workflow_dispatch:  # Allow manual trigger
+
+# Sets permissions of the GITHUB_TOKEN to allow deployment to GitHub Pages
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Run scraper
+        run: python3 scraper.py
+
+      - name: Commit and push if changed
+        run: |
+          git config user.name "UniLodge Bot"
+          git config user.email "bot@unilodge-report.local"
+          git add index.html
+          git diff --staged --quiet || (git commit -m "Auto update $(date +'%Y-%m-%d %H:%M UTC')" && git push)
+
+  deploy:
+    needs: update
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v4
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: '.'
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

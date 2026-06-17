@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>UniLodge Queensland — 空房日报</title>
+<link href="https://api.fontshare.com/v2/css?f[]=satoshi@400,500,600,700&display=swap" rel="stylesheet">
+<style>
+    :root {
+        --bg: #fafaf9;
+        --card-bg: #fff;
+        --text: #1a1a1a;
+        --text-muted: #6b7280;
+        --border: #e5e4e1;
+        --green: #059669; --green-bg: #ecfdf5;
+        --amber: #d97706; --amber-bg: #fffbeb;
+        --red: #dc2626; --red-bg: #fef2f2;
+        --radius: 10px;
+        --font: 'Satoshi', system-ui, -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    }
+    @media (prefers-color-scheme: dark) {
+        :root {
+            --bg: #0c0c0c;
+            --card-bg: #161616;
+            --text: #e5e5e5;
+            --text-muted: #8b8b8b;
+            --border: #262626;
+        }
+        .cat-divider td { background: #1a1a1a !important; }
+    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html { font-family: var(--font); -webkit-font-smoothing: antialiased; background: var(--bg); color: var(--text); }
+    body { max-width: 1050px; margin: 0 auto; padding: 32px 20px 60px; line-height: 1.6; }
+
+    /* Header */
+    .header { margin-bottom: 24px; }
+    .header-top { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin-bottom: 4px; }
+    .header h1 { font-size: clamp(1.2rem, 3vw, 1.5rem); font-weight: 700; letter-spacing: -0.025em; display: flex; align-items: center; gap: 8px; }
+    .header h1 .dot { width: 10px; height: 10px; border-radius: 50%; background: #E21836; flex-shrink: 0; }
+    .header .meta { color: var(--text-muted); font-size: 0.8rem; line-height: 1.7; }
+
+    /* Property nav */
+    .prop-nav { display: flex; gap: 6px; margin-bottom: 22px; overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
+    .prop-nav::-webkit-scrollbar { display: none; }
+    .prop-btn { flex-shrink: 0; padding: 9px 18px; border-radius: 8px; cursor: pointer; font-size: 0.84rem; font-weight: 600; color: var(--text-muted); border: 1px solid var(--border); background: var(--card-bg); font-family: var(--font); transition: all 200ms cubic-bezier(0.32,0.72,0,1); white-space: nowrap; letter-spacing: -0.01em; }
+    .prop-btn:hover { color: var(--text); border-color: var(--text-muted); }
+    .prop-btn.active { background: var(--text); color: var(--bg); border-color: var(--text); }
+    .prop-btn .count { font-size: 0.68rem; opacity: 0.5; margin-left: 3px; font-weight: 400; }
+
+    /* Sub tabs */
+    .sub-tabs { display: flex; gap: 4px; margin-bottom: 16px; background: var(--card-bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 4px; width: fit-content; }
+    .sub-tab { padding: 7px 16px; border-radius: 7px; cursor: pointer; font-size: 0.83rem; font-weight: 500; color: var(--text-muted); border: none; background: none; font-family: var(--font); transition: all 200ms cubic-bezier(0.32,0.72,0,1); white-space: nowrap; }
+    .sub-tab:hover { color: var(--text); }
+    .sub-tab.active { background: var(--bg); color: var(--text); box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
+    .sub-tab .count { font-size: 0.66rem; opacity: 0.45; margin-left: 4px; font-weight: 400; }
+
+    /* Table */
+    .table-wrap { background: var(--card-bg); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+    .table-wrap table { width: 100%; border-collapse: collapse; font-size: 0.875rem; }
+    .table-wrap th { text-align: left; padding: 12px 16px; font-weight: 600; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.07em; color: var(--text-muted); background: var(--bg); border-bottom: 1px solid var(--border); white-space: nowrap; }
+    .table-wrap td { padding: 12px 16px; border-bottom: 1px solid var(--border); font-variant-numeric: tabular-nums; }
+    .table-wrap tr:last-child td { border-bottom: none; }
+    .table-wrap tbody tr { transition: background 200ms cubic-bezier(0.32,0.72,0,1); }
+    .table-wrap tbody tr:hover { background: var(--bg); }
+
+    .cat-divider td { padding: 8px 16px !important; background: var(--bg); font-size: 0.68rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.07em; color: var(--text-muted); border-bottom: 1px solid var(--border); }
+
+    .row-ok  { box-shadow: inset 3px 0 0 var(--green); }
+    .row-warn { box-shadow: inset 3px 0 0 var(--amber); }
+
+    .tag { display: inline-flex; align-items: center; gap: 5px; padding: 4px 12px; border-radius: 99px; font-size: 0.8rem; font-weight: 600; white-space: nowrap; }
+    .tag::before { content: ''; width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+    .tag-ok   { background: var(--green-bg); color: var(--green); }
+    .tag-ok::before   { background: var(--green); }
+    .tag-warn { background: var(--amber-bg); color: var(--amber); }
+    .tag-warn::before { background: var(--amber); }
+
+    .price { font-weight: 600; }
+    .room-name { font-weight: 600; }
+    .count-num { font-weight: 700; font-size: 0.9rem; color: var(--text); font-variant-numeric: tabular-nums; }
+
+    .prop-panel { display: none; }
+    .prop-panel.active { display: block; }
+    .sub-panel { display: none; }
+    .sub-panel.active { display: block; }
+
+    .panel-summary { margin-top: 12px; font-size: 0.8rem; color: var(--text-muted); }
+    .stat-ok { color: var(--green); font-weight: 600; }
+    .stat-warn { color: var(--amber); font-weight: 600; }
+
+    .footer { margin-top: 40px; padding-top: 20px; border-top: 1px solid var(--border); }
+    .footer-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px,1fr)); gap: 14px; }
+    .footer-card { background: var(--card-bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px 18px; }
+    .footer-card h3 { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.07em; color: var(--text-muted); margin-bottom: 8px; font-weight: 600; }
+    .footer-card p, .footer-card li { font-size: 0.82rem; line-height: 1.7; }
+    .footer-card ul { list-style: none; padding: 0; }
+    .footer-card li::before { content: "— "; color: var(--text-muted); }
+
+    .fade-in { opacity: 0; transform: translateY(8px); animation: fadeIn 500ms cubic-bezier(0.32,0.72,0,1) forwards; }
+    @keyframes fadeIn { to { opacity: 1; transform: translateY(0); } }
+
+    @media (max-width: 768px) {
+        body { padding: 20px 12px 50px; }
+        .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+        .table-wrap table { min-width: 620px; }
+        .header-top { flex-direction: column; }
+        .prop-nav, .sub-tabs { overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none; width: 100%; }
+        .prop-nav::-webkit-scrollbar, .sub-tabs::-webkit-scrollbar { display: none; }
+    }
+</style>
+</head>
+<body>
+
+<div class="header fade-in" style="animation-delay:0ms">
+    <div class="header-top">
+        <h1><span class="dot"></span>UniLodge Queensland 空房日报</h1>
+    </div>
+    <p class="meta">📍 Brisbane, Queensland — 4 所公寓 &ensp;|&ensp; 更新于 2026年06月17日 13:48 &ensp;|&ensp; 🎯 起租: 2026-07-15 &ensp;|&ensp; 每日 10:00 / 15:00 自动刷新</p>
+</div>
+
+<nav class="prop-nav fade-in" style="animation-delay:60ms" id="prop-nav"><button class="prop-btn active" data-slug="brisbane-city" onclick="switchProp('brisbane-city')">Brisbane City<span class="count">11</span></button>
+        <button class="prop-btn" data-slug="park-central" onclick="switchProp('park-central')">Park Central<span class="count">9</span></button>
+        <button class="prop-btn" data-slug="south-bank" onclick="switchProp('south-bank')">South Bank<span class="count">12</span></button>
+        <button class="prop-btn" data-slug="toowong" onclick="switchProp('toowong')">Toowong<span class="count">7</span></button>
+        </nav>
+
+
+    <div class="prop-panel active" id="prop-brisbane-city">
+        <div class="sub-tabs"><button class="sub-tab active" data-contract="Full Year" data-prop="brisbane-city" onclick="switchContract('brisbane-city','Full Year')">Full Year<span class="count">11</span></button>
+            <button class="sub-tab" data-contract="Half Year" data-prop="brisbane-city" onclick="switchContract('brisbane-city','Half Year')">Half Year<span class="count">11</span></button>
+            </div>
+        
+                <div class="sub-panel active" data-contract="Full Year" data-prop="brisbane-city">
+                    <div class="table-wrap fade-in">
+                        <table>
+                            <thead><tr><th>房型</th><th>入住</th><th>周租金</th><th>总租金 (含GST)</th><th>合同期</th><th>库存</th><th>起租日期</th></tr></thead>
+                            <tbody><tr class="cat-divider"><td colspan="7"><span class="cat-label">Studio</span></td></tr><tr class="row-ok"><td><span class="room-name">Studio King Single</span></td><td>1人</td><td><span class="price">$609</span></td><td><span class="price">$31,233.00</span></td><td>359天</td><td><span class="count-num">10+</span> <span class="tag tag-ok">有房</span></td><td>2026-07-15</td></tr><tr class="row-ok"><td><span class="room-name">Corner Studio King Single</span></td><td>1人</td><td><span class="price">$619</span></td><td><span class="price">$31,746.37</span></td><td>359天</td><td><span class="count-num">10+</span> <span class="tag tag-ok">有房</span></td><td>2026-07-15</td></tr><tr class="row-ok"><td><span class="room-name">Deluxe Studio</span></td><td>1人</td><td><span class="price">$639</span></td><td><span class="price">$32,769.52</span></td><td>359天</td><td><span class="count-num">10+</span> <span class="tag tag-ok">有房</span></td><td>2026-07-15</td></tr><tr class="row-ok"><td><span class="room-name">Deluxe Corner Studio</span></td><td>1人</td><td><span class="price">$649</span></td><td><span class="price">$33,282.89</span></td><td>359天</td><td><span class="count-num">10+</span> <span class="tag tag-ok">有房</span></td><td>2026-07-15</td></tr><tr class="row-ok"><td><span class="room-name">Studio Adaptable</span></td><td>1人</td><td><span class="price">$699</span></td><td><span class="price">$35,846.15</span></td><td>359天</td><td><span class="count-num">10+</span> <span class="tag tag-ok">有房</span></td><td>2026-07-15</td></tr><tr class="cat-divider"><td colspan="7"><span class="cat-label">Studio Twin Share</span></td></tr><tr class="row-ok"><td><span class="room-name">Twin Share Loft</span></td><td>1人</td><td><span class="price">$319</span></td><td><span class="price">$16,359.63</span></td><td>359天</td><td><span class="count-num">10+</span> <span class="tag tag-ok">有房</span></td><td>2026-07-15</td></tr><tr class="row-ok"><td><span class="room-name">Corner Twin Share</span></td><td>1人</td><td><span class="price">$319</span></td><td><span class="price">$16,359.63</span></td><td>359天</td><td><span class="count-num">10+</span> <span class="tag tag-ok">有房</span></td><td>2026-07-15</td></tr><tr class="row-ok"><td><span class="room-name">4 Bedroom Twin Share</span></td><td>1人</td><td><span class="price">$369</span></td><td><span class="price">$18,922.89</span></td><td>359天</td><td><span class="count-num">10+</span> <span class="tag tag-ok">有房</span></td><td>2026-07-15</td></tr><tr class="row-ok"><td><span class="room-name">Corner Large Twin Share</span></td><td>1人</td><td><span class="price">$419</span></td><td><span class="price">$21,489.74</span></td><td>359天</td><td><span class="count-num">1</span> <span class="tag tag-ok">有房</span></td><td>2026-07-15</td></tr><tr class="cat-divider"><td colspan="7"><span class="cat-label">2 Bedroom</span></td></tr><tr class="row-ok"><td><span class="room-name">2 Bedroom Apartment</span></td><td>1人</td><td><span class="price">$519</span></td><td><span class="price">$26,616.26</span></td><td>359天</td><td><span class="count-num">10+</span> <span class="tag tag-ok">有房</span></td><td>2026-07-15</td></tr><tr class="cat-divider"><td colspan="7"><span class="cat-label">Other</span></td></tr><tr class="row-ok"><td><span class="room-name">King Single Room</span></td><td>1人</td><td><span class="price">$429</span></td><td><span class="price">$22,003.11</span></td><td>359天</td><td><span class="count-num">1</span> <span class="tag tag-ok">有房</span></td><td>2026-07-15</td></tr></tbody>
+                        </table>
+                    </div>
+                    <div class="panel-summary">📅 2026-07-15 → 2027-07-09 &ensp;|&ensp; 共 11 种房型 &ensp;|&ensp; <span class="stat-ok">可预订 11</span> &ensp;|&ensp; <span class="stat-warn">等位 False</span></div>
+                </div>
+                <div class="sub-panel" data-contract="Half Year" data-prop="brisbane-city">
+                    <div class="table-wrap fade-in">
+                        <table>
+                            <thead><tr><th>房型</th><th>入住</th><th>周租金</th><th>总租金 (含GST)</th><th>合同期</th><th>库存</th><th>起租日期</th></tr></thead>
+                            <tbody><tr class="cat-divider"><td colspan="7"><span class="cat-label">Studio</span></td></tr><tr class="row-ok"><td><span class="room-name">Studio King Single</span></td><td>1人</td><td><span class="price">$639</span></td><td><span class="price">$18,986.24</span></td><td>208天</td><td><span class="count-num">10+</span> <span class="tag tag-ok">有房</span></td><td>2026-07-15</td></tr><tr class="row-ok"><td><span class="room-name">Corner Studio King Single</span></td><td>1人</td><td><span class="price">$649</span></td><td><span class="price">$19,283.68</span></td><td>208天</td><td><span class="count-num">10+</span> <span class="tag tag-ok">有房</span></td><td>2026-07-15</td></tr><tr class="row-ok"><td><span class="room-name">Deluxe Studio</span></td><td>1人</td><td><span class="price">$669</span></td><td><span class="price">$19,878.56</span></td><td>208天</td><td><span class="count-num">10+</span> <span class="tag tag-ok">有房</span></td><td>2026-07-15</td></tr><tr class="row-ok"><td><span class="room-name">Deluxe Corner Studio</span></td><td>1人</td><td><span class="price">$679</span></td><td><span class="price">$20,176.00</span></td><td>208天</td><td><span class="count-num">10+</span> <span class="tag tag-ok">有房</span></td><td>2026-07-15</td></tr><tr class="row-ok"><td><span class="room-name">Studio Adaptable</span></td><td>1人</td><td><span class="price">$729</span></td><td><span class="price">$21,661.12</span></td><td>208天</td><td><span class="count-num">10+</span> <span class="tag tag-ok">有房</span></td><td>2026-07-15</td></tr><tr class="cat-divider"><td colspan="7"><span class="cat-label">Studio Twin Share</span></td></tr><tr class="row-ok"><td><span class="room-name">Twin Share Loft</span></td><td>1人</td><td><span class="price">$349</span></td><td><span class="price">$10,368.80</span></td><td>208天</td><td><span class="count-num">10+</span> <span class="tag tag-ok">有房</span></td><td>2026-07-15</td></tr><tr class="row-ok"><td><span class="room-name">Corner Twin Share</span></td><td>1人</td><td><span class="price">$349</span></td><td><span class="price">$10,368.80</span></td><td>208天</td><td><span class="count-num">10+</span> <span class="tag tag-ok">有房</span></td><td>2026-07-15</td></tr><tr class="row-ok"><td><span class="room-name">4 Bedroom Twin Share</span></td><td>1人</td><td><span class="price">$399</span></td><td><span class="price">$11,856.00</span></td><td>208天</td><td><span class="count-num">10+</span> <span class="tag tag-ok">有房</span></td><td>2026-07-15</td></tr><tr class="row-ok"><td><span class="room-name">Corner Large Twin Share</span></td><td>1人</td><td><span class="price">$449</span></td><td><span class="price">$13,341.12</span></td><td>208天</td><td><span class="count-num">1</span> <span class="tag tag-ok">有房</span></td><td>2026-07-15</td></tr><tr class="cat-divider"><td colspan="7"><span class="cat-label">2 Bedroom</span></td></tr><tr class="row-ok"><td><span class="room-name">2 Bedroom Apartment</span></td><td>1人</td><td><span class="price">$549</span></td><td><span class="price">$16,313.44</span></td><td>208天</td><td><span class="count-num">10+</span> <span class="tag tag-ok">有房</span></td><td>2026-07-15</td></tr><tr class="cat-divider"><td colspan="7"><span class="cat-label">Other</span></td></tr><tr class="row-ok"><td><span class="room-name">King Single Room</span></td><td>1人</td><td><span class="price">$459</span></td><td><span class="price">$13,638.56</span></td><td>208天</td><td><span class="count-num">1</span> <span class="tag tag-ok">有房</span></td><td>2026-07-15</td></tr></tbody>
+                        </table>
+                    </div>
+                    <div class="panel-summary">📅 2026-07-15 → 2027-02-08 &ensp;|&ensp; 共 11 种房型 &ensp;|&ensp; <span class="stat-ok">可预订 11</span> &ensp;|&ensp; <span class="stat-warn">等位 False</span></div>
+                </div>
+    </div>
+    <div class="prop-panel" id="prop-park-central">
+        <div class="sub-tabs"><button class="sub-tab active" data-contract="Full Year" data-prop="park-central" onclick="switchContract('park-central','Full Year')">Full Year<span class="count">9</span></button>
+            <button class="sub-tab" data-contract="Half Year" data-prop="park-central" onclick="switchContract('park-central','Half Year')">Half Year<span class="count">9</span></button>
+            </div>
+        
+                <div class="sub-panel active" data-contract="Full Year" data-prop="park-central">
+                    <div class="table-wrap fade-in">
+                        <table>
+                            <thead><tr><th>房型</th><th>入住</th><th>周租金</th><th>总租金 (含GST)</th><th>合同期</th><th>库存</th><th>起租日期</th></tr></thead>
+                            <tbody><tr class="cat-divider"><td colspan="7"><span class="cat-label">Studio</span></td></tr><tr class="row-warn"><td><span class="room-name">Studio Single</span></td><td>1人</td><td><span class="price">$519</span></td><td><span class="price">$25,800.72</span></td><td>348天</td><td><span class="tag tag-warn">等位</span></td><td>2026-07-15</td></tr><tr class="row-ok"><td><span class="room-name">Studio Double</span></td><td>1人</td><td><span class="price">$539</span></td><td><span class="price">$26,796.00</span></td><td>348天</td><td><span class="count-num">10+</span> <span class="tag tag-ok">有房</span></td><td>2026-07-15</td></tr><tr class="row-ok"><td><span class="room-name">Studio Premium</span></td><td>1人</td><td><span class="price">$579</span></td><td><span class="price">$28,783.08</span></td><td>348天</td><td><span class="count-num">3</span> <span class="tag tag-ok">有房</span></td><td>2026-07-15</td></tr><tr class="row-ok"><td><span class="room-name">Studio Accessible</span></td><td>1人</td><td><span class="price">$579</span></td><td><span class="price">$28,783.08</span></td><td>348天</td><td><span class="count-num">2</span> <span class="tag tag-ok">有房</span></td><td>2026-07-15</td></tr><tr class="row-ok"><td><span class="room-name">Studio Deluxe</span></td><td>1人</td><td><span class="price">$599</span></td><td><span class="price">$29,778.36</span></td><td>348天</td><td><span class="count-num">2</span> <span class="tag tag-ok">有房</span></td><td>2026-07-15</td></tr><tr class="cat-divider"><td colspan="7"><span class="cat-label">4 Bedroom Multi-Share</span></td></tr><tr class="row-ok"><td><span class="room-name">4 Bedroom</span></td><td>1人</td><td><span class="price">$409</span></td><td><span class="price">$20,333.64</span></td><td>348天</td><td><span class="count-num">10+</span> <span class="tag tag-ok">有房</span></td><td>2026-07-15</td></tr><tr class="cat-divider"><td colspan="7"><span class="cat-label">5 Bedroom Multi-Share</span></td></tr><tr class="row-ok"><td><span class="room-name">5 Bedroom</span></td><td>1人</td><td><span class="price">$389</span></td><td><span class="price">$19,338.36</span></td><td>348天</td><td><span class="count-num">10+</span> <span class="tag tag-ok">有房</span></td><td>2026-07-15</td></tr><tr class="row-ok"><td><span class="room-name">5 Bedroom Private Bathroom</span></td><td>1人</td><td><span class="price">$469</span></td><td><span class="price">$23,316.00</span></td><td>348天</td><td><span class="count-num">7</span> <span class="tag tag-ok">有房</span></td><td>2026-07-15</td></tr><tr class="cat-divider"><td colspan="7"><span class="cat-label">6 Bedroom Multi-Share</span></td></tr><tr class="row-ok"><td><span class="room-name">6 Bedroom</span></td><td>1人</td><td><span class="price">$379</span></td><td><span class="price">$18,840.72</span></td><td>348天</td><td><span class="count-num">10+</span> <span class="tag tag-ok">有房</span></td><td>2026-07-15</td></tr></tbody>
+                        </table>
+                    </div>
+                    <div class="panel-summary">📅 2026-07-15 → 2027-06-28 &ensp;|&ensp; 共 9 种房型 &ensp;|&ensp; <span class="stat-ok">可预订 8</span> &ensp;|&ensp; <span class="stat-warn">等位 False</span></div>
+                </div>
+                <div class="sub-panel" data-contract="Half Year" data-prop="park-central">
+                    <div class="table-wrap fade-in">
+                        <table>
+                            <thead><tr><th>房型</th><th>入住</th><th>周租金</th><th>总租金 (含GST)</th><th>合同期</th><th>库存</th><th>起租日期</th></tr></thead>
+                            <tbody><tr class="cat-divider"><td colspan="7"><span class="cat-label">Studio</span></td></tr><tr class="row-warn"><td><span class="room-name">Studio Single</span></td><td>1人</td><td><span class="price">$549</span></td><td><span class="price">$15,215.42</span></td><td>194天</td><td><span class="tag tag-warn">等位</span></td><td>2026-07-15</td></tr><tr class="row-ok"><td><span class="room-name">Studio Double</span></td><td>1人</td><td><span class="price">$569</span></td><td><span class="price">$15,768.32</span></td><td>194天</td><td><span class="count-num">10+</span> <span class="tag tag-ok">有房</span></td><td>2026-07-15</td></tr><tr class="row-ok"><td><span class="room-name">Studio Premium</span></td><td>1人</td><td><span class="price">$609</span></td><td><span class="price">$16,878.00</span></td><td>194天</td><td><span class="count-num">3</span> <span class="tag tag-ok">有房</span></td><td>2026-07-15</td></tr><tr class="row-ok"><td><span class="room-name">Studio Accessible</span></td><td>1人</td><td><span class="price">$609</span></td><td><span class="price">$16,878.00</span></td><td>194天</td><td><span class="count-num">2</span> <span class="tag tag-ok">有房</span></td><td>2026-07-15</td></tr><tr class="row-ok"><td><span class="room-name">Studio Deluxe</span></td><td>1人</td><td><span class="price">$629</span></td><td><span class="price">$17,430.90</span></td><td>194天</td><td><span class="count-num">2</span> <span class="tag tag-ok">有房</span></td><td>2026-07-15</td></tr><tr class="cat-divider"><td colspan="7"><span class="cat-label">4 Bedroom Multi-Share</span></td></tr><tr class="row-ok"><td><span class="room-name">4 Bedroom</span></td><td>1人</td><td><span class="price">$439</span></td><td><span class="price">$12,165.74</span></td><td>194天</td><td><span class="count-num">10+</span> <span class="tag tag-ok">有房</span></td><td>2026-07-15</td></tr><tr class="cat-divider"><td colspan="7"><span class="cat-label">5 Bedroom Multi-Share</span></td></tr><tr class="row-ok"><td><span class="room-name">5 Bedroom</span></td><td>1人</td><td><span class="price">$419</span></td><td><span class="price">$11,610.90</span></td><td>194天</td><td><span class="count-num">10+</span> <span class="tag tag-ok">有房</span></td><td>2026-07-15</td></tr><tr class="row-ok"><td><span class="room-name">5 Bedroom Private Bathroom</span></td><td>1人</td><td><span class="price">$499</span></td><td><span class="price">$13,828.32</span></td><td>194天</td><td><span class="count-num">7</span> <span class="tag tag-ok">有房</span></td><td>2026-07-15</td></tr><tr class="cat-divider"><td colspan="7"><span class="cat-label">6 Bedroom Multi-Share</span></td></tr><tr class="row-ok"><td><span class="room-name">6 Bedroom</span></td><td>1人</td><td><span class="price">$409</span></td><td><span class="price">$11,335.42</span></td><td>194天</td><td><span class="count-num">10+</span> <span class="tag tag-ok">有房</span></td><td>2026-07-15</td></tr></tbody>
+                        </table>
+                    </div>
+                    <div class="panel-summary">📅 2026-07-15 → 2027-01-25 &ensp;|&ensp; 共 9 种房型 &ensp;|&ensp; <span class="stat-ok">可预订 8</span> &ensp;|&ensp; <span class="stat-warn">等位 False</span></div>
+                </div>
+    </div>
+    <div class="prop-panel" id="prop-south-bank">
+        <div class="sub-tabs"><button class="sub-tab active" data-contract="Full Year" data-prop="south-bank" onclick="switchContract('south-bank','Full Year')">Full Year<span class="count">12</span></button>
+            <button class="sub-tab" data-contract="Half Year" data-prop="south-bank" onclick="switchContract('south-bank','Half Year')">Half Year<span class="count">12</span></button>
+            </div>
+        
+                <div class="sub-panel active" data-contract="Full Year" data-prop="south-bank">
+                    <div class="table-wrap fade-in">
+                        <table>
+                            <thead><tr><th>房型</th><th>入住</th><th>周租金</th><th>总租金 (含GST)</th><th>合同期</th><th>库存</th><th>起租日期</th></tr></thead>
+                            <tbody><tr class="cat-divider"><td colspan="7"><span class="cat-label">Studio</span></td></tr><tr class="row-ok"><td><span class="room-name">Studio Medium</span></td><td>1人</td><td><span class="price">$589</span></td><td><span class="price">$30,206.26</span></td><td>359天</td><td><span class="count-num">10+</span> <span class="tag tag-ok">有房</span></td><td>2026-07-15</td></tr><tr class="row-ok"><td><span class="room-name">Studio Large</span></td><td>1人</td><td><span class="price">$649</span></td><td><span class="price">$33,282.89</span></td><td>359天</td><td><span class="count-num">9</span> <span class="tag tag-ok">有房</span></td><td>2026-07-15</td></tr><tr class="row-warn"><td><span class="room-name">Studio Corner</span></td><td>1人</td><td><span class="price">$709</span></td><td><span class="price">$36,363.11</span></td><td>359天</td><td><span class="tag tag-warn">等位</span></td><td>2026-07-15</td></tr><tr class="row-ok"><td><span class="room-name">Studio Accessible</span></td><td>1人</td><td><span class="price">$719</span></td><td><span class="price">$36,872.89</span></td><td>359天</td><td><span class="count-num">1</span> <span class="tag tag-ok">有房</span></td><td>2026-07-15</td></tr><tr class="row-warn"><td><span class="room-name">Studio Corner Large</span></td><td>1人</td><td><span class="price">$759</span></td><td><span class="price">$38,926.37</span></td><td>359天</td><td><span class="tag tag-warn">等位</span></td><td>2026-07-15</td></tr><tr class="cat-divider"><td colspan="7"><span class="cat-label">Studio Twin Share</span></td></tr><tr class="row-warn"><td><span class="room-name">Twin Bunk Studio</span></td><td>1人</td><td><span class="price">$359</span></td><td><span class="price">$18,413.11</span></td><td>359天</td><td><span class="tag tag-warn">等位</span></td><td>2026-07-15</td></tr><tr class="row-ok"><td><span class="room-name">Twin King Studio</span></td><td>1人</td><td><span class="price">$369</span></td><td><span class="price">$18,922.89</span></td><td>359天</td><td><span class="count-num">4</span> <span class="tag tag-ok">有房</span></td><td>2026-07-15</td></tr><tr class="cat-divider"><td colspan="7"><span class="cat-label">2 Bedroom</span></td></tr><tr class="row-warn"><td><span class="room-name">2 Bedroom Multi-Share Apartment</span></td><td>1人</td><td><span class="price">$509</span></td><td><span class="price">$26,102.89</span></td><td>359天</td><td><span class="tag tag-warn">等位</span></td><td>2026-07-15</td></tr><tr class="row-warn"><td><span class="room-name">2 Bedroom Ensuite Apartment</span></td><td>1人</td><td><span class="price">$549</span></td><td><span class="price">$28,156.37</span></td><td>359天</td><td><span class="tag tag-warn">等位</span></td><td>2026-07-15</td></tr><tr class="row-warn"><td><span class="room-name">2 Bedroom Ensuite Large Apartment</span></td><td>1人</td><td><span class="price">$569</span></td><td><span class="price">$29,183.11</span></td><td>359天</td><td><span class="tag tag-warn">等位</span></td><td>2026-07-15</td></tr><tr class="cat-divider"><td colspan="7"><span class="cat-label">6 Bedroom Multi-Share</span></td></tr><tr class="row-ok"><td><span class="room-name">6 Bedroom Multi-Share Apartment</span></td><td>1人</td><td><span class="price">$409</span></td><td><span class="price">$20,976.37</span></td><td>359天</td><td><span class="count-num">10+</span> <span class="tag tag-ok">有房</span></td><td>2026-07-15</td></tr><tr class="row-ok"><td><span class="room-name">6 Bedroom Deluxe Multi-Share Apartment</span></td><td>1人</td><td><span class="price">$439</span></td><td><span class="price">$22,512.89</span></td><td>359天</td><td><span class="count-num">5</span> <span class="tag tag-ok">有房</span></td><td>2026-07-15</td></tr></tbody>
+                        </table>
+                    </div>
+                    <div class="panel-summary">📅 2026-07-15 → 2027-07-09 &ensp;|&ensp; 共 12 种房型 &ensp;|&ensp; <span class="stat-ok">可预订 6</span> &ensp;|&ensp; <span class="stat-warn">等位 False</span></div>
+                </div>
+                <div class="sub-panel" data-contract="Half Year" data-prop="south-bank">
+                    <div class="table-wrap fade-in">
+                        <table>
+                            <thead><tr><th>房型</th><th>入住</th><th>周租金</th><th>总租金 (含GST)</th><th>合同期</th><th>库存</th><th>起租日期</th></tr></thead>
+                            <tbody><tr class="cat-divider"><td colspan="7"><span class="cat-label">Studio</span></td></tr><tr class="row-ok"><td><span class="room-name">Studio Medium</span></td><td>1人</td><td><span class="price">$629</span></td><td><span class="price">$18,690.88</span></td><td>208天</td><td><span class="count-num">10+</span> <span class="tag tag-ok">有房</span></td><td>2026-07-15</td></tr><tr class="row-ok"><td><span class="room-name">Studio Large</span></td><td>1人</td><td><span class="price">$689</span></td><td><span class="price">$20,473.44</span></td><td>208天</td><td><span class="count-num">9</span> <span class="tag tag-ok">有房</span></td><td>2026-07-15</td></tr><tr class="row-warn"><td><span class="room-name">Studio Corner</span></td><td>1人</td><td><span class="price">$749</span></td><td><span class="price">$22,256.00</span></td><td>208天</td><td><span class="tag tag-warn">等位</span></td><td>2026-07-15</td></tr><tr class="row-ok"><td><span class="room-name">Studio Accessible</span></td><td>1人</td><td><span class="price">$759</span></td><td><span class="price">$22,553.44</span></td><td>208天</td><td><span class="count-num">1</span> <span class="tag tag-ok">有房</span></td><td>2026-07-15</td></tr><tr class="row-warn"><td><span class="room-name">Studio Corner Large</span></td><td>1人</td><td><span class="price">$799</span></td><td><span class="price">$23,741.12</span></td><td>208天</td><td><span class="tag tag-warn">等位</span></td><td>2026-07-15</td></tr><tr class="cat-divider"><td colspan="7"><span class="cat-label">Studio Twin Share</span></td></tr><tr class="row-warn"><td><span class="room-name">Twin Bunk Studio</span></td><td>1人</td><td><span class="price">$399</span></td><td><span class="price">$11,856.00</span></td><td>208天</td><td><span class="tag tag-warn">等位</span></td><td>2026-07-15</td></tr><tr class="row-ok"><td><span class="room-name">Twin King Studio</span></td><td>1人</td><td><span class="price">$409</span></td><td><span class="price">$12,153.44</span></td><td>208天</td><td><span class="count-num">4</span> <span class="tag tag-ok">有房</span></td><td>2026-07-15</td></tr><tr class="cat-divider"><td colspan="7"><span class="cat-label">2 Bedroom</span></td></tr><tr class="row-warn"><td><span class="room-name">2 Bedroom Multi-Share Apartment</span></td><td>1人</td><td><span class="price">$549</span></td><td><span class="price">$16,313.44</span></td><td>208天</td><td><span class="tag tag-warn">等位</span></td><td>2026-07-15</td></tr><tr class="row-warn"><td><span class="room-name">2 Bedroom Ensuite Apartment</span></td><td>1人</td><td><span class="price">$589</span></td><td><span class="price">$17,501.12</span></td><td>208天</td><td><span class="tag tag-warn">等位</span></td><td>2026-07-15</td></tr><tr class="row-warn"><td><span class="room-name">2 Bedroom Ensuite Large Apartment</span></td><td>1人</td><td><span class="price">$609</span></td><td><span class="price">$18,096.00</span></td><td>208天</td><td><span class="tag tag-warn">等位</span></td><td>2026-07-15</td></tr><tr class="cat-divider"><td colspan="7"><span class="cat-label">6 Bedroom Multi-Share</span></td></tr><tr class="row-ok"><td><span class="room-name">6 Bedroom Multi-Share Apartment</span></td><td>1人</td><td><span class="price">$449</span></td><td><span class="price">$13,341.12</span></td><td>208天</td><td><span class="count-num">10+</span> <span class="tag tag-ok">有房</span></td><td>2026-07-15</td></tr><tr class="row-ok"><td><span class="room-name">6 Bedroom Deluxe Multi-Share Apartment</span></td><td>1人</td><td><span class="price">$479</span></td><td><span class="price">$14,233.44</span></td><td>208天</td><td><span class="count-num">5</span> <span class="tag tag-ok">有房</span></td><td>2026-07-15</td></tr></tbody>
+                        </table>
+                    </div>
+                    <div class="panel-summary">📅 2026-07-15 → 2027-02-08 &ensp;|&ensp; 共 12 种房型 &ensp;|&ensp; <span class="stat-ok">可预订 6</span> &ensp;|&ensp; <span class="stat-warn">等位 False</span></div>
+                </div>
+    </div>
+    <div class="prop-panel" id="prop-toowong">
+        <div class="sub-tabs"><button class="sub-tab active" data-contract="Full Year" data-prop="toowong" onclick="switchContract('toowong','Full Year')">Full Year<span class="count">7</span></button>
+            <button class="sub-tab" data-contract="Half Year" data-prop="toowong" onclick="switchContract('toowong','Half Year')">Half Year<span class="count">7</span></button>
+            </div>
+        
+                <div class="sub-panel active" data-contract="Full Year" data-prop="toowong">
+                    <div class="table-wrap fade-in">
+                        <table>
+                            <thead><tr><th>房型</th><th>入住</th><th>周租金</th><th>总租金 (含GST)</th><th>合同期</th><th>库存</th><th>起租日期</th></tr></thead>
+                            <tbody><tr class="cat-divider"><td colspan="7"><span class="cat-label">Studio</span></td></tr><tr class="row-ok"><td><span class="room-name">Studio</span></td><td>1人</td><td><span class="price">$539</span></td><td><span class="price">$27,335.00</span></td><td>355天</td><td><span class="count-num">10+</span> <span class="tag tag-ok">有房</span></td><td>2026-07-15</td></tr><tr class="row-ok"><td><span class="room-name">Studio Long</span></td><td>1人</td><td><span class="price">$539</span></td><td><span class="price">$27,335.00</span></td><td>355天</td><td><span class="count-num">10+</span> <span class="tag tag-ok">有房</span></td><td>2026-07-15</td></tr><tr class="row-ok"><td><span class="room-name">Studio Riverview</span></td><td>1人</td><td><span class="price">$559</span></td><td><span class="price">$28,346.75</span></td><td>355天</td><td><span class="count-num">10+</span> <span class="tag tag-ok">有房</span></td><td>2026-07-15</td></tr><tr class="row-ok"><td><span class="room-name">Studio Long Riverview</span></td><td>1人</td><td><span class="price">$559</span></td><td><span class="price">$28,346.75</span></td><td>355天</td><td><span class="count-num">9</span> <span class="tag tag-ok">有房</span></td><td>2026-07-15</td></tr><tr class="row-ok"><td><span class="room-name">Studio Deluxe Riverview</span></td><td>1人</td><td><span class="price">$619</span></td><td><span class="price">$31,392.65</span></td><td>355天</td><td><span class="count-num">3</span> <span class="tag tag-ok">有房</span></td><td>2026-07-15</td></tr><tr class="row-ok"><td><span class="room-name">Accessible Studio</span></td><td>1人</td><td><span class="price">$659</span></td><td><span class="price">$33,419.70</span></td><td>355天</td><td><span class="count-num">1</span> <span class="tag tag-ok">有房</span></td><td>2026-07-15</td></tr><tr class="cat-divider"><td colspan="7"><span class="cat-label">Studio Twin Share</span></td></tr><tr class="row-ok"><td><span class="room-name">Twin Studios</span></td><td>1人</td><td><span class="price">$359</span></td><td><span class="price">$18,204.40</span></td><td>355天</td><td><span class="count-num">10+</span> <span class="tag tag-ok">有房</span></td><td>2026-07-15</td></tr></tbody>
+                        </table>
+                    </div>
+                    <div class="panel-summary">📅 2026-07-15 → 2027-07-05 &ensp;|&ensp; 共 7 种房型 &ensp;|&ensp; <span class="stat-ok">可预订 7</span> &ensp;|&ensp; <span class="stat-warn">等位 False</span></div>
+                </div>
+                <div class="sub-panel" data-contract="Half Year" data-prop="toowong">
+                    <div class="table-wrap fade-in">
+                        <table>
+                            <thead><tr><th>房型</th><th>入住</th><th>周租金</th><th>总租金 (含GST)</th><th>合同期</th><th>库存</th><th>起租日期</th></tr></thead>
+                            <tbody><tr class="cat-divider"><td colspan="7"><span class="cat-label">Studio</span></td></tr><tr class="row-ok"><td><span class="room-name">Studio</span></td><td>1人</td><td><span class="price">$569</span></td><td><span class="price">$15,524.48</span></td><td>191天</td><td><span class="count-num">10+</span> <span class="tag tag-ok">有房</span></td><td>2026-07-15</td></tr><tr class="row-ok"><td><span class="room-name">Studio Long</span></td><td>1人</td><td><span class="price">$569</span></td><td><span class="price">$15,524.48</span></td><td>191天</td><td><span class="count-num">10+</span> <span class="tag tag-ok">有房</span></td><td>2026-07-15</td></tr><tr class="row-ok"><td><span class="room-name">Studio Riverview</span></td><td>1人</td><td><span class="price">$589</span></td><td><span class="price">$16,070.74</span></td><td>191天</td><td><span class="count-num">10+</span> <span class="tag tag-ok">有房</span></td><td>2026-07-15</td></tr><tr class="row-ok"><td><span class="room-name">Studio Long Riverview</span></td><td>1人</td><td><span class="price">$589</span></td><td><span class="price">$16,070.74</span></td><td>191天</td><td><span class="count-num">9</span> <span class="tag tag-ok">有房</span></td><td>2026-07-15</td></tr><tr class="row-ok"><td><span class="room-name">Studio Deluxe Riverview</span></td><td>1人</td><td><span class="price">$649</span></td><td><span class="price">$17,707.61</span></td><td>191天</td><td><span class="count-num">3</span> <span class="tag tag-ok">有房</span></td><td>2026-07-15</td></tr><tr class="row-ok"><td><span class="room-name">Accessible Studio</span></td><td>1人</td><td><span class="price">$689</span></td><td><span class="price">$18,800.13</span></td><td>191天</td><td><span class="count-num">1</span> <span class="tag tag-ok">有房</span></td><td>2026-07-15</td></tr><tr class="cat-divider"><td colspan="7"><span class="cat-label">Studio Twin Share</span></td></tr><tr class="row-ok"><td><span class="room-name">Twin Studios</span></td><td>1人</td><td><span class="price">$389</span></td><td><span class="price">$10,613.87</span></td><td>191天</td><td><span class="count-num">10+</span> <span class="tag tag-ok">有房</span></td><td>2026-07-15</td></tr></tbody>
+                        </table>
+                    </div>
+                    <div class="panel-summary">📅 2026-07-15 → 2027-01-22 &ensp;|&ensp; 共 7 种房型 &ensp;|&ensp; <span class="stat-ok">可预订 7</span> &ensp;|&ensp; <span class="stat-warn">等位 False</span></div>
+                </div>
+    </div>
+
+<div class="footer fade-in" style="animation-delay:300ms">
+    <div class="footer-grid">
+        <div class="footer-card">
+            <h3>房源概况</h3>
+            <ul>
+                <li>4 所 UniLodge Queensland 公寓</li>
+                <li>共 39 种房型 (Full Year)</li>
+                <li>可预订 32 · 等位 7</li>
+                <li>起租日期统一为 2026-07-15</li>
+            </ul>
+        </div>
+        <div class="footer-card">
+            <h3>注意事项</h3>
+            <ul>
+                <li>价格均为澳元 (AUD)，已含 GST</li>
+                <li>候补（等位）= 当前无房，可排队等待</li>
+                <li>Full Year 和 Half Year 为固定学期合同</li>
+                <li>周租金为总价÷合同天数×7估算</li>
+            </ul>
+        </div>
+        <div class="footer-card">
+            <h3>数据来源</h3>
+            <ul>
+                <li>UniLodge 官方预订系统</li>
+                <li>reserve.unilodge.com.au</li>
+                <li>macOS launchd 每日自动抓取</li>
+                <li>生成时间: 2026-06-17 13:48</li>
+            </ul>
+        </div>
+    </div>
+    <p style="color:var(--text-muted);font-size:0.74rem;margin-top:20px;text-align:center">UniLodge Queensland · 仅供内部参考 · 2026年06月17日 13:48</p>
+</div>
+
+<script>
+function switchProp(slug) {
+    document.querySelectorAll('.prop-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.prop-panel').forEach(p => p.classList.remove('active'));
+    var btn = document.querySelector('.prop-btn[data-slug="' + slug + '"]');
+    if (btn) btn.classList.add('active');
+    var panel = document.getElementById('prop-' + slug);
+    if (panel) {
+        panel.classList.add('active');
+        // Activate first sub-tab
+        var firstSub = panel.querySelector('.sub-tab');
+        if (firstSub) firstSub.click();
+    }
+}
+
+function switchContract(propSlug, contractName) {
+    var panel = document.getElementById('prop-' + propSlug);
+    if (!panel) return;
+    panel.querySelectorAll('.sub-tab').forEach(t => t.classList.remove('active'));
+    panel.querySelectorAll('.sub-panel').forEach(p => p.classList.remove('active'));
+    var subBtn = panel.querySelector('.sub-tab[data-contract="' + contractName + '"]');
+    if (subBtn) subBtn.classList.add('active');
+    var subPanel = panel.querySelector('.sub-panel[data-contract="' + contractName + '"]');
+    if (subPanel) subPanel.classList.add('active');
+}
+</script>
+
+</body>
+</html>
