@@ -13,14 +13,10 @@ from datetime import datetime, date
 from pathlib import Path
 
 # ===== Config =====
-import os
-
 OUTPUT_DIR = Path(__file__).parent
 OUTPUT_FILE = OUTPUT_DIR / "index.html"
 
-# Agent code - use environment variable if set (for GitHub Actions secrets)
-AGENT_CODE = os.environ.get("AGENT_CODE", "AUHOME")
-
+BASE_URL = "https://www.reserve.unilodge.com.au"
 CHECKIN_DATE = "2026-07-15"
 
 # Property definitions
@@ -102,10 +98,10 @@ def fetch_room_details(subdomain, stay_id, from_date, to_date):
            f"toDateCustom={to_date}&"
            f"category=0&"
            f"noID=noID&"
-           f"promoCode={AGENT_CODE}&"
-           f"agentEmail={AGENT_CODE}&"
-           f"usePromoCode={AGENT_CODE}&"
-           f"initialPromoCode={AGENT_CODE}")
+           f"promoCode=AUHOME&"
+           f"agentEmail=AUHOME&"
+           f"usePromoCode=AUHOME&"
+           f"initialPromoCode=AUHOME")
     return fetch_url(url)
 
 
@@ -117,6 +113,36 @@ def parse_jsonld(html):
     if match:
         return json.loads(match.group(1))
     return None
+
+
+def check_august_availability(subdomain):
+    """Check if this property supports August 2026 start date.
+    Looks at the booking choices page to find the maximum selectable date (data-maxstart)
+    across ALL stay periods. If ANY stay period allows selecting dates >= 2026-08-01,
+    then August start is supported.
+
+    Returns True if August is selectable in the website date picker UI, False otherwise.
+    """
+    try:
+        url = (f"{BASE_URL}/bookingChoicesProperties.html?"
+               f"searchType=Property&"
+               f"searchId={subdomain}&"
+               f"siteType=unilodge&"
+               f"fromDate=2026-07-15&"
+               f"toDate=2026-07-16&"
+               f"promoCode=AUHOME")
+        html = fetch_url(url)
+
+        # Find ALL data-maxstart values across all stay periods
+        maxstart_dates = re.findall(r'data-maxstart="([^"]*)"', html)
+
+        for ms in maxstart_dates:
+            if ms >= "2026-08-01":
+                return True
+    except Exception as e:
+        print(f"      August check error: {e}")
+
+    return False
 
 
 def parse_grid(html):
@@ -234,6 +260,10 @@ def fetch_property_data(prop_name, prop_config):
     subdomain = prop_config["subdomain"]
     all_contracts = {}
 
+    # Check August availability based on website date picker UI (data-maxstart)
+    aug_supported = check_august_availability(subdomain)
+    print(f"    August start: {'YES' if aug_supported else 'NO'}")
+
     for contract_name, contract_info in prop_config["contracts"].items():
         stay_id = contract_info["stay_id"]
         from_date = contract_info["from"]
@@ -287,6 +317,7 @@ def fetch_property_data(prop_name, prop_config):
                 short_title = grid_info.get("short_title", room_name)
                 grid_price = grid_info.get("price", 0)
                 room_count = counts.get(room_id, 0)
+                august_ok = aug_supported
 
                 rooms.append({
                     "id": room_id,
@@ -305,6 +336,7 @@ def fetch_property_data(prop_name, prop_config):
                     "is_waitlist": is_waitlist,
                     "grid_price": grid_price,
                     "room_count": room_count,
+                    "august_available": august_ok,
                     "category": get_category(room_name),
                 })
 
@@ -382,7 +414,7 @@ def generate_html(all_data):
             for cat in CAT_ORDER:
                 if cat not in cats:
                     continue
-                rows_html += f"""<tr class="cat-divider"><td colspan="7"><span class="cat-label">{cat}</span></td></tr>"""
+                rows_html += f"""<tr class="cat-divider"><td colspan="8"><span class="cat-label">{cat}</span></td></tr>"""
                 for room in cats[cat]:
                     wl = room["is_waitlist"]
                     rc = "row-ok" if not wl else "row-warn"
@@ -397,13 +429,15 @@ def generate_html(all_data):
                         else:
                             count_str = str(count_val)
                         inventory_cell = f'<span class="count-num">{count_str}</span> <span class="tag {tc}">{tt}</span>'
-                    rows_html += f"""<tr class="{rc}"><td><span class="room-name">{room['name']}</span></td><td>{room['occupancy']}人</td><td><span class="price">${room['weekly_price']:,}</span></td><td><span class="price">${room['total_price']:,.2f}</span></td><td>{room['days']}天</td><td>{inventory_cell}</td><td>{c_from}</td></tr>"""
+                    aug_ok = room.get("august_available", False)
+                    aug_display = '<span style="color:var(--green);font-weight:600">是</span>' if aug_ok else '<span style="color:var(--text-muted)">否</span>'
+                    rows_html += f"""<tr class="{rc}"><td><span class="room-name">{room['name']}</span></td><td>{room['occupancy']}人</td><td><span class="price">${room['weekly_price']:,}</span></td><td><span class="price">${room['total_price']:,.2f}</span></td><td>{room['days']}天</td><td>{inventory_cell}</td><td>{aug_display}</td><td>{c_from}</td></tr>"""
 
             contract_panels_html += f"""
                 <div class="sub-panel{c_active}" data-contract="{cname}" data-prop="{slug}">
                     <div class="table-wrap fade-in">
                         <table>
-                            <thead><tr><th>房型</th><th>入住</th><th>周租金</th><th>总租金 (含GST)</th><th>合同期</th><th>库存</th><th>起租日期</th></tr></thead>
+                            <thead><tr><th>房型</th><th>入住</th><th>周租金</th><th>总租金 (含GST)</th><th>合同期</th><th>库存</th><th>8月份</th><th>起租日期</th></tr></thead>
                             <tbody>{rows_html}</tbody>
                         </table>
                     </div>
@@ -650,7 +684,7 @@ def main():
     html = generate_html(all_data)
     OUTPUT_FILE.write_text(html, encoding="utf-8")
     print(f"[{datetime.now().strftime('%H:%M:%S')}] Report saved to: {OUTPUT_FILE}")
-    print(f"\n✅ Done! Generated {OUTPUT_FILE}")
+    print(f"\n✅ Done! Open {OUTPUT_FILE} in your browser.")
 
 
 if __name__ == "__main__":
