@@ -9,6 +9,7 @@ Run: python3 update_report.py
 import json
 import re
 import subprocess
+import sys
 from datetime import datetime, date
 from pathlib import Path
 
@@ -679,6 +680,11 @@ def main():
                 print(f"  ✗ {prop_name}: No data")
         except Exception as e:
             print(f"  ✗ {prop_name}: ERROR - {e}")
+
+    if not all_data:
+        print("\n❌ ERROR: No data fetched for any property! Refusing to write empty report.")
+        print("   (GitHub runner IP likely blocked by UniLodge. Run locally instead.)")
+        sys.exit(1)
 
     print(f"\n[{datetime.now().strftime('%H:%M:%S')}] Generating HTML report...")
     html = generate_html(all_data)
