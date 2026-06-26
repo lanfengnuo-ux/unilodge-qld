@@ -1,6 +1,9 @@
 name: Update Room Report
 
 on:
+  push:
+    paths:
+      - index.html
   schedule:
     - cron: '3 0 * * *'   # 10:03 AM AEST
     - cron: '7 5 * * *'   # 15:07 PM AEST
