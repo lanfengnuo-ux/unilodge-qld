@@ -16,6 +16,7 @@ from pathlib import Path
 # ===== Config =====
 OUTPUT_DIR = Path(__file__).parent
 OUTPUT_FILE = OUTPUT_DIR / "index.html"
+HISTORY_FILE = OUTPUT_DIR / "previous_data.json"
 
 BASE_URL = "https://www.reserve.unilodge.com.au"
 CHECKIN_DATE = "2026-07-15"
@@ -116,13 +117,13 @@ def parse_jsonld(html):
     return None
 
 
-def check_august_availability(subdomain):
-    """Check if this property supports August 2026 start date.
-    Looks at the booking choices page to find the maximum selectable date (data-maxstart)
-    across ALL stay periods. If ANY stay period allows selecting dates >= 2026-08-01,
-    then August start is supported.
+def check_intake_availability(subdomain):
+    """Check which intake months are selectable in the booking date picker.
+    Looks at the booking choices page to find the maximum selectable date
+    (data-maxstart) across ALL stay periods. If ANY stay period allows selecting
+    dates >= a month's start, that intake is considered available.
 
-    Returns True if August is selectable in the website date picker UI, False otherwise.
+    Returns {"august": bool, "september": bool}.
     """
     try:
         url = (f"{BASE_URL}/bookingChoicesProperties.html?"
@@ -137,13 +138,14 @@ def check_august_availability(subdomain):
         # Find ALL data-maxstart values across all stay periods
         maxstart_dates = re.findall(r'data-maxstart="([^"]*)"', html)
 
-        for ms in maxstart_dates:
-            if ms >= "2026-08-01":
-                return True
+        return {
+            "august": any(ms >= "2026-08-01" for ms in maxstart_dates),
+            "september": any(ms >= "2026-09-01" for ms in maxstart_dates),
+        }
     except Exception as e:
-        print(f"      August check error: {e}")
+        print(f"      Intake check error: {e}")
 
-    return False
+    return {"august": False, "september": False}
 
 
 def parse_grid(html):
@@ -244,6 +246,24 @@ def get_category(room_name):
     return "Other"
 
 
+def category_key(category):
+    """Map a room category to a simplified filter key."""
+    if "Studio" in category:
+        return "studio"
+    if "1 Bedroom" in category:
+        return "one"
+    if "2 Bedroom" in category:
+        return "two"
+    if "Multi-Share" in category:
+        return "multi"
+    return "other"
+
+
+def safe_attr(s):
+    """Strip characters that would break an HTML data-* attribute."""
+    return re.sub(r'["<>]', ' ', str(s))
+
+
 CAT_ORDER = [
     "Studio", "Studio Twin Share",
     "1 Bedroom", "2 Bedroom",
@@ -261,9 +281,11 @@ def fetch_property_data(prop_name, prop_config):
     subdomain = prop_config["subdomain"]
     all_contracts = {}
 
-    # Check August availability based on website date picker UI (data-maxstart)
-    aug_supported = check_august_availability(subdomain)
-    print(f"    August start: {'YES' if aug_supported else 'NO'}")
+    # Check August/September availability based on website date picker UI (data-maxstart)
+    intake = check_intake_availability(subdomain)
+    aug_supported = intake["august"]
+    sept_supported = intake["september"]
+    print(f"    August start: {'YES' if aug_supported else 'NO'}, September start: {'YES' if sept_supported else 'NO'}")
 
     for contract_name, contract_info in prop_config["contracts"].items():
         stay_id = contract_info["stay_id"]
@@ -319,6 +341,7 @@ def fetch_property_data(prop_name, prop_config):
                 grid_price = grid_info.get("price", 0)
                 room_count = counts.get(room_id, 0)
                 august_ok = aug_supported
+                september_ok = sept_supported
 
                 rooms.append({
                     "id": room_id,
@@ -338,6 +361,7 @@ def fetch_property_data(prop_name, prop_config):
                     "grid_price": grid_price,
                     "room_count": room_count,
                     "august_available": august_ok,
+                    "september_available": september_ok,
                     "category": get_category(room_name),
                 })
 
@@ -345,6 +369,38 @@ def fetch_property_data(prop_name, prop_config):
         all_contracts[contract_name] = rooms
 
     return all_contracts
+
+
+# ===== Persistence (new / price-drop tracking) =====
+
+def load_previous_data():
+    """Load previous scrape data. Returns {room_key: {weekly_price, is_waitlist, first_seen}}."""
+    if not HISTORY_FILE.exists():
+        return {}
+    try:
+        with open(HISTORY_FILE, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        return data.get('rooms', {})
+    except (json.JSONDecodeError, KeyError, IOError):
+        return {}
+
+
+def save_previous_data(all_data):
+    """Save current rooms as previous data for next comparison."""
+    rooms = {}
+    for prop_name, contracts in all_data.items():
+        slug = PROPERTIES[prop_name]["slug"]
+        for cname, room_list in contracts.items():
+            cslug = cname.replace(' ', '-').lower()
+            for r in room_list:
+                key = f"{slug}:{cslug}:{r['id']}"
+                rooms[key] = {
+                    "weekly_price": r.get("weekly_price", 0),
+                    "is_waitlist": r.get("is_waitlist", False),
+                    "first_seen": r.get("_first_seen", datetime.now().strftime('%Y-%m-%d')),
+                }
+    with open(HISTORY_FILE, 'w', encoding='utf-8') as f:
+        json.dump({"rooms": rooms, "last_updated": datetime.now().strftime('%Y-%m-%d %H:%M')}, f, ensure_ascii=False)
 
 
 # ===== HTML Generator =====
@@ -398,6 +454,8 @@ def generate_html(all_data):
             avail = sum(1 for r in rooms if not r["is_waitlist"])
             wl = sum(1 for r in rooms if r["is_waitlist"])
 
+            key = f"{slug}-{cname.replace(' ', '-').lower()}"
+
             # Group by category
             cats = {}
             for r in rooms:
@@ -415,7 +473,7 @@ def generate_html(all_data):
             for cat in CAT_ORDER:
                 if cat not in cats:
                     continue
-                rows_html += f"""<tr class="cat-divider"><td colspan="8"><span class="cat-label">{cat}</span></td></tr>"""
+                rows_html += f"""<tr class="cat-divider"><td colspan="9"><span class="cat-label">{cat}</span></td></tr>"""
                 for room in cats[cat]:
                     wl = room["is_waitlist"]
                     rc = "row-ok" if not wl else "row-warn"
@@ -431,14 +489,55 @@ def generate_html(all_data):
                             count_str = str(count_val)
                         inventory_cell = f'<span class="count-num">{count_str}</span> <span class="tag {tc}">{tt}</span>'
                     aug_ok = room.get("august_available", False)
+                    sept_ok = room.get("september_available", False)
                     aug_display = '<span style="color:var(--green);font-weight:600">是</span>' if aug_ok else '<span style="color:var(--text-muted)">否</span>'
-                    rows_html += f"""<tr class="{rc}"><td><span class="room-name">{room['name']}</span></td><td>{room['occupancy']}人</td><td><span class="price">${room['weekly_price']:,}</span></td><td><span class="price">${room['total_price']:,.2f}</span></td><td>{room['days']}天</td><td>{inventory_cell}</td><td>{aug_display}</td><td>{c_from}</td></tr>"""
+                    sept_display = '<span style="color:var(--green);font-weight:600">是</span>' if sept_ok else '<span style="color:var(--red);font-weight:600">否</span>'
+
+                    price_badges = ""
+                    if room.get("is_new"):
+                        price_badges += ' <span class="badge badge-new">🆕 新上</span>'
+                    if room.get("price_drop"):
+                        price_badges += f' <span class="badge badge-drop">🔻 -${room["price_drop"]}</span>'
+
+                    search_text = safe_attr(f"{room['name']} {room['short_title']} {room['category']} {room['occupancy']}人").lower()
+                    cat_key = category_key(room["category"])
+                    avail_key = "1" if not wl else "0"
+                    aug_key = "1" if aug_ok else "0"
+                    sept_key = "1" if sept_ok else "0"
+
+                    rows_html += f"""<tr class="{rc}" data-search="{search_text}" data-cat="{cat_key}" data-avail="{avail_key}" data-price="{room['weekly_price']}" data-bed="{room['occupancy']}" data-days="{room['days']}" data-total="{room['total_price']}" data-name="{safe_attr(room['name'])}" data-aug="{aug_key}" data-sept="{sept_key}"><td><span class="room-name">{room['name']}</span></td><td>{room['occupancy']}人</td><td><span class="price">${room['weekly_price']:,}</span>{price_badges}</td><td><span class="price">${room['total_price']:,.2f}</span></td><td>{room['days']}天</td><td>{inventory_cell}</td><td>{aug_display}</td><td>{sept_display}</td><td>{c_from}</td></tr>"""
+
+            filter_bar = f"""
+                <div class="filter-bar" data-key="{key}">
+                    <input class="f-input f-search" type="text" placeholder="🔍 搜索房型 / 户型..." oninput="filterTable('{key}')">
+                    <div class="f-group">
+                        <button class="f-btn active" data-v="all" onclick="setFilter('{key}','cat','all',this)">全部</button>
+                        <button class="f-btn" data-v="studio" onclick="setFilter('{key}','cat','studio',this)">Studio</button>
+                        <button class="f-btn" data-v="one" onclick="setFilter('{key}','cat','one',this)">1房</button>
+                        <button class="f-btn" data-v="two" onclick="setFilter('{key}','cat','two',this)">2房</button>
+                        <button class="f-btn" data-v="multi" onclick="setFilter('{key}','cat','multi',this)">多人间</button>
+                        <button class="f-btn" data-v="other" onclick="setFilter('{key}','cat','other',this)">其他</button>
+                    </div>
+                    <div class="f-group">
+                        <button class="f-btn active" data-v="all" onclick="setFilter('{key}','avail','all',this)">全部状态</button>
+                        <button class="f-btn" data-v="1" onclick="setFilter('{key}','avail','1',this)">有房</button>
+                        <button class="f-btn" data-v="0" onclick="setFilter('{key}','avail','0',this)">等位</button>
+                    </div>
+                    <div class="f-group f-price">
+                        <input class="f-input f-price-min" type="number" min="0" placeholder="周租$最低" oninput="filterTable('{key}')">
+                        <span class="f-sep">—</span>
+                        <input class="f-input f-price-max" type="number" min="0" placeholder="最高" oninput="filterTable('{key}')">
+                    </div>
+                    <button class="f-clear" onclick="clearFilters('{key}')">✕ 清除</button>
+                    <span class="f-count" id="count-{key}"></span>
+                </div>"""
 
             contract_panels_html += f"""
-                <div class="sub-panel{c_active}" data-contract="{cname}" data-prop="{slug}">
+                <div class="sub-panel{c_active}" data-contract="{cname}" data-prop="{slug}" data-key="{key}">
+                    {filter_bar}
                     <div class="table-wrap fade-in">
                         <table>
-                            <thead><tr><th>房型</th><th>入住</th><th>周租金</th><th>总租金 (含GST)</th><th>合同期</th><th>库存</th><th>8月份</th><th>起租日期</th></tr></thead>
+                            <thead><tr><th class="sortable" data-sort="name" onclick="sortTable('{key}','name','text')">房型 <span class="sort-arrow"></span></th><th class="sortable" data-sort="bed" onclick="sortTable('{key}','bed','num')">入住 <span class="sort-arrow"></span></th><th class="sortable" data-sort="price" onclick="sortTable('{key}','price','num')">周租金 <span class="sort-arrow"></span></th><th class="sortable" data-sort="total" onclick="sortTable('{key}','total','num')">总租金 (含GST) <span class="sort-arrow"></span></th><th class="sortable" data-sort="days" onclick="sortTable('{key}','days','num')">合同期 <span class="sort-arrow"></span></th><th>库存</th><th class="sortable" data-sort="aug" onclick="sortTable('{key}','aug','num')">8月份 <span class="sort-arrow"></span></th><th class="sortable" data-sort="sept" onclick="sortTable('{key}','sept','num')">9月份 <span class="sort-arrow"></span></th><th>起租日期</th></tr></thead>
                             <tbody>{rows_html}</tbody>
                         </table>
                     </div>
@@ -547,6 +646,34 @@ def generate_html(all_data):
     .room-name {{ font-weight: 600; }}
     .count-num {{ font-weight: 700; font-size: 0.9rem; color: var(--text); font-variant-numeric: tabular-nums; }}
 
+    /* Filter bar */
+    .filter-bar {{ display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 14px; padding: 10px 12px; background: var(--card-bg); border: 1px solid var(--border); border-radius: var(--radius); }}
+    .f-input {{ padding: 7px 12px; border-radius: 7px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-size: 0.82rem; font-family: var(--font); outline: none; min-width: 0; }}
+    .f-input:focus {{ border-color: var(--text-muted); }}
+    .f-search {{ min-width: 180px; flex: 1 1 160px; }}
+    .f-group {{ display: flex; gap: 4px; flex-wrap: wrap; align-items: center; }}
+    .f-btn {{ padding: 6px 11px; border-radius: 99px; cursor: pointer; font-size: 0.76rem; font-weight: 600; color: var(--text-muted); border: 1px solid var(--border); background: transparent; font-family: var(--font); transition: all 150ms ease; white-space: nowrap; }}
+    .f-btn:hover {{ color: var(--text); border-color: var(--text-muted); }}
+    .f-btn.active {{ background: var(--text); color: var(--bg); border-color: var(--text); }}
+    .f-price-min, .f-price-max {{ width: 90px; }}
+    .f-sep {{ color: var(--text-muted); font-size: 0.8rem; }}
+    .f-clear {{ padding: 6px 11px; border-radius: 7px; cursor: pointer; font-size: 0.76rem; font-weight: 600; color: var(--text-muted); border: 1px solid var(--border); background: transparent; font-family: var(--font); }}
+    .f-clear:hover {{ color: var(--red); border-color: var(--red); }}
+    .f-count {{ margin-left: auto; font-size: 0.76rem; color: var(--text-muted); white-space: nowrap; }}
+
+    /* Sort */
+    .sortable {{ cursor: pointer; user-select: none; }}
+    .sortable:hover {{ color: var(--text); }}
+    .sort-arrow {{ font-size: 0.62rem; margin-left: 2px; }}
+
+    /* Badges */
+    .badge {{ display: inline-flex; align-items: center; gap: 3px; padding: 2px 7px; border-radius: 99px; font-size: 0.68rem; font-weight: 700; margin-left: 6px; white-space: nowrap; vertical-align: middle; }}
+    .badge-new {{ background: var(--green-bg); color: var(--green); }}
+    .badge-drop {{ background: var(--red-bg); color: var(--red); }}
+
+    /* Empty state */
+    .empty-state {{ display: none; padding: 32px 16px; text-align: center; color: var(--text-muted); font-size: 0.86rem; }}
+
     .prop-panel {{ display: none; }}
     .prop-panel.active {{ display: block; }}
     .sub-panel {{ display: none; }}
@@ -648,6 +775,118 @@ function switchContract(propSlug, contractName) {{
     var subPanel = panel.querySelector('.sub-panel[data-contract="' + contractName + '"]');
     if (subPanel) subPanel.classList.add('active');
 }}
+
+var __fs = {{}};
+var __sort = {{}};
+
+function getFilterState(key) {{
+    if (!__fs[key]) __fs[key] = {{cat: 'all', avail: 'all'}};
+    return __fs[key];
+}}
+
+function setFilter(key, f, v, btn) {{
+    var st = getFilterState(key);
+    st[f] = v;
+    var panel = document.querySelector('.sub-panel[data-key="' + key + '"]');
+    if (panel && btn) {{
+        var group = btn.parentElement;
+        if (group) group.querySelectorAll('.f-btn').forEach(function(b) {{ b.classList.remove('active'); }});
+        btn.classList.add('active');
+    }}
+    filterTable(key);
+}}
+
+function clearFilters(key) {{
+    var st = getFilterState(key);
+    st.cat = 'all'; st.avail = 'all';
+    var panel = document.querySelector('.sub-panel[data-key="' + key + '"]');
+    if (panel) {{
+        var s = panel.querySelector('.f-search'); if (s) s.value = '';
+        var mn = panel.querySelector('.f-price-min'); if (mn) mn.value = '';
+        var mx = panel.querySelector('.f-price-max'); if (mx) mx.value = '';
+        panel.querySelectorAll('.f-btn').forEach(function(b) {{ b.classList.toggle('active', b.dataset.v === 'all'); }});
+    }}
+    filterTable(key);
+}}
+
+function filterTable(key) {{
+    var panel = document.querySelector('.sub-panel[data-key="' + key + '"]');
+    if (!panel) return;
+    var st = getFilterState(key);
+    var searchEl = panel.querySelector('.f-search');
+    var search = searchEl ? (searchEl.value || '').trim().toLowerCase() : '';
+    var min = parseFloat(panel.querySelector('.f-price-min').value) || 0;
+    var max = parseFloat(panel.querySelector('.f-price-max').value);
+    if (isNaN(max)) max = Infinity;
+    var tbody = panel.querySelector('tbody');
+    if (!tbody) return;
+    var visible = 0;
+    Array.from(tbody.children).forEach(function(el) {{
+        if (el.classList.contains('cat-divider')) return;
+        var show = true;
+        if (st.cat !== 'all' && el.dataset.cat !== st.cat) show = false;
+        if (st.avail !== 'all' && el.dataset.avail !== st.avail) show = false;
+        if (search && (el.dataset.search || '').indexOf(search) === -1) show = false;
+        var price = parseInt(el.dataset.price, 10) || 0;
+        if (price < min || price > max) show = false;
+        el.style.display = show ? '' : 'none';
+        if (show) visible++;
+    }});
+    updateDividers(tbody);
+    var countEl = document.getElementById('count-' + key);
+    if (countEl) countEl.textContent = '找到 ' + visible + ' 套';
+    var empty = panel.querySelector('.empty-state');
+    if (!empty) {{
+        empty = document.createElement('div');
+        empty.className = 'empty-state';
+        empty.textContent = '没有匹配的房源';
+        var tw = panel.querySelector('.table-wrap');
+        if (tw) tw.appendChild(empty);
+    }}
+    empty.style.display = visible === 0 ? 'block' : 'none';
+}}
+
+function updateDividers(tbody) {{
+    var pending = [];
+    Array.from(tbody.children).forEach(function(el) {{
+        if (el.classList.contains('cat-divider')) {{
+            if (pending.length) pending[pending.length - 1].divider.style.display = pending[pending.length - 1].any ? '' : 'none';
+            pending.push({{divider: el, any: false}});
+        }} else {{
+            if (pending.length && el.style.display !== 'none') pending[pending.length - 1].any = true;
+        }}
+    }});
+    if (pending.length) pending[pending.length - 1].divider.style.display = pending[pending.length - 1].any ? '' : 'none';
+}}
+
+function sortTable(key, col, dataType) {{
+    var panel = document.querySelector('.sub-panel[data-key="' + key + '"]');
+    if (!panel) return;
+    var tbody = panel.querySelector('tbody');
+    if (!tbody) return;
+    var st = __sort[key] || {{col: '', dir: 0}};
+    var dir = st.col === col ? st.dir * -1 : 1;
+    __sort[key] = {{col: col, dir: dir}};
+    panel.querySelectorAll('th.sortable').forEach(function(th) {{
+        var arrow = th.querySelector('.sort-arrow');
+        if (arrow) arrow.textContent = th.dataset.sort === col ? (dir > 0 ? '▲' : '▼') : '';
+    }});
+    var groups = [], cur = null;
+    Array.from(tbody.children).forEach(function(el) {{
+        if (el.classList.contains('cat-divider')) {{ cur = {{divider: el, rows: []}}; groups.push(cur); }}
+        else if (cur) cur.rows.push(el);
+    }});
+    groups.forEach(function(g) {{
+        g.rows.sort(function(a, b) {{
+            var av = a.dataset[col], bv = b.dataset[col];
+            if (dataType === 'num') {{ av = parseFloat(av) || 0; bv = parseFloat(bv) || 0; return (av - bv) * dir; }}
+            return String(av).localeCompare(String(bv)) * dir;
+        }});
+        g.rows.forEach(function(r) {{ tbody.removeChild(r); }});
+        var anchor = g.divider.nextElementSibling;
+        g.rows.forEach(function(r) {{ tbody.insertBefore(r, anchor); }});
+    }});
+}}
 </script>
 
 </body>
@@ -686,9 +925,35 @@ def main():
         print("   (GitHub runner IP likely blocked by UniLodge. Run locally instead.)")
         sys.exit(1)
 
+    # ---- Compare with previous data for new / price-drop badges ----
+    previous = load_previous_data()
+    today_str = datetime.now().strftime('%Y-%m-%d')
+    new_count = 0
+    drop_count = 0
+    for prop_name in all_data:
+        slug = PROPERTIES[prop_name]["slug"]
+        for cname, room_list in all_data[prop_name].items():
+            cslug = cname.replace(' ', '-').lower()
+            for r in room_list:
+                key = f"{slug}:{cslug}:{r['id']}"
+                price = r.get("weekly_price", 0)
+                if key in previous:
+                    prev = previous[key]
+                    prev_price = prev.get("weekly_price", 0)
+                    if price > 0 and prev_price > 0 and price < prev_price:
+                        r["price_drop"] = prev_price - price
+                        drop_count += 1
+                    r["_first_seen"] = prev.get("first_seen", today_str)
+                else:
+                    r["is_new"] = True
+                    r["_first_seen"] = today_str
+                    new_count += 1
+    print(f"    New rooms: {new_count}, Price drops: {drop_count}")
+
     print(f"\n[{datetime.now().strftime('%H:%M:%S')}] Generating HTML report...")
     html = generate_html(all_data)
     OUTPUT_FILE.write_text(html, encoding="utf-8")
+    save_previous_data(all_data)
     print(f"[{datetime.now().strftime('%H:%M:%S')}] Report saved to: {OUTPUT_FILE}")
     print(f"\n✅ Done! Open {OUTPUT_FILE} in your browser.")
 

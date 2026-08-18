@@ -2,7 +2,7 @@
 # UniLodge QLD — Auto-update script
 # Runs scraper and pushes to GitHub if data changed
 
-cd "/Users/lan/Desktop/订单/B/unilodge-qld" || exit 1
+cd "/Users/lan/Projects/B/unilodge-qld" || exit 1
 
 # Activate SSH agent and load key
 eval "$(ssh-agent -s)" 2>/dev/null
@@ -21,7 +21,7 @@ if [ $exit_code -ne 0 ]; then
 fi
 
 # Commit and push if changed
-git add index.html
+git add index.html previous_data.json
 if git diff --staged --quiet; then
     echo "[$(date)] No changes — skipping push"
 else
