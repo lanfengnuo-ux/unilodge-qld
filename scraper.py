@@ -971,8 +971,9 @@ def main():
     print("=" * 60)
 
     all_data = {}
+    expected_properties = ["Brisbane City", "Park Central", "South Bank", "Toowong"]
 
-    for prop_name in ["Brisbane City", "Park Central", "South Bank", "Toowong"]:
+    for prop_name in expected_properties:
         prop_config = PROPERTIES[prop_name]
         try:
             data = fetch_property_data(prop_name, prop_config)
@@ -987,9 +988,14 @@ def main():
         except Exception as e:
             print(f"  ✗ {prop_name}: ERROR - {e}")
 
-    if not all_data:
-        print("\n❌ ERROR: No data fetched for any property! Refusing to write empty report.")
-        print("   (GitHub runner IP likely blocked by UniLodge. Run locally instead.)")
+    missing = [p for p in expected_properties if p not in all_data]
+    if missing:
+        if len(missing) == len(expected_properties):
+            print("\n❌ ERROR: No data fetched for any property! Refusing to write empty report.")
+            print("   (GitHub runner IP likely blocked by UniLodge. Run locally instead.)")
+        else:
+            print(f"\n❌ ERROR: {len(missing)}/{len(expected_properties)} properties failed: {', '.join(missing)}")
+            print("   Refusing to overwrite last complete report with partial data.")
         sys.exit(1)
 
     # ---- Compare with previous data for new / price-drop badges ----
