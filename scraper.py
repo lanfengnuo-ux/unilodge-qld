@@ -2,15 +2,16 @@
 """
 UniLodge Queensland — Daily Room Availability Report
 Covers 4 properties: Brisbane City, Park Central, South Bank, Toowong
-Generates a self-contained Iglu-style HTML report.
-Run: python3 update_report.py
+Scrapes ALL stay periods (租期) from the booking site and matches them to a
+student's check-in date via a dropdown filter.
+Run: python3 scraper.py
 """
 
 import json
 import re
 import subprocess
 import sys
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from pathlib import Path
 
 # ===== Config =====
@@ -19,7 +20,8 @@ OUTPUT_FILE = OUTPUT_DIR / "index.html"
 HISTORY_FILE = OUTPUT_DIR / "previous_data.json"
 
 BASE_URL = "https://www.reserve.unilodge.com.au"
-CHECKIN_DATE = "2026-07-15"
+# Initial search date used on the "select stay period" page (any valid date works)
+SEARCH_DATE = "2026-07-15"
 
 # Property definitions
 PROPERTIES = {
@@ -29,10 +31,6 @@ PROPERTIES = {
         "address": "15 Adelaide Street, Brisbane City, Queensland 4000",
         "phone": "+61 7 3137 1500",
         "url": "https://www.unilodge.com.au/student-accommodation-brisbane/brisbane-city",
-        "contracts": {
-            "Full Year": {"stay_id": "2081", "from": "2026-07-15", "to": "2027-07-09"},
-            "Half Year": {"stay_id": "2080", "from": "2026-07-15", "to": "2027-02-08"},
-        },
     },
     "Park Central": {
         "slug": "park-central",
@@ -40,10 +38,6 @@ PROPERTIES = {
         "address": "20 Gillingham Street, Woolloongabba, Queensland 4102",
         "phone": "+61 7 3444 8100",
         "url": "https://www.unilodge.com.au/student-accommodation-brisbane/park-central",
-        "contracts": {
-            "Full Year": {"stay_id": "1040", "from": "2026-07-15", "to": "2027-06-28"},
-            "Half Year": {"stay_id": "1044", "from": "2026-07-15", "to": "2027-01-25"},
-        },
     },
     "South Bank": {
         "slug": "south-bank",
@@ -51,10 +45,6 @@ PROPERTIES = {
         "address": "125 Colchester Street, South Brisbane, Queensland 4101",
         "phone": "+61 7 3505 5700",
         "url": "https://www.unilodge.com.au/student-accommodation-brisbane/south-bank",
-        "contracts": {
-            "Full Year": {"stay_id": "2069", "from": "2026-07-15", "to": "2027-07-09"},
-            "Half Year": {"stay_id": "2070", "from": "2026-07-15", "to": "2027-02-08"},
-        },
     },
     "Toowong": {
         "slug": "toowong",
@@ -62,10 +52,6 @@ PROPERTIES = {
         "address": "66 High Street, Toowong, Queensland 4066",
         "phone": "+61 7 3377 9000",
         "url": "https://www.unilodge.com.au/student-accommodation-brisbane/toowong",
-        "contracts": {
-            "Full Year": {"stay_id": "957", "from": "2026-07-15", "to": "2027-07-05"},
-            "Half Year": {"stay_id": "1748", "from": "2026-07-15", "to": "2027-01-22"},
-        },
     },
 }
 
@@ -90,9 +76,13 @@ def fetch_url(url, timeout=30):
 def fetch_room_details(subdomain, stay_id, from_date, to_date):
     """Fetch the room selection page for a specific property + stay period."""
     booking_url = f"https://{subdomain}/bookingSearch.html"
+    try:
+        next_day = (datetime.strptime(from_date, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
+    except Exception:
+        next_day = to_date
     url = (f"{booking_url}?"
            f"id=123x8816752334648537&"
-           f"initialQueryString=searchType%3DProperty%26searchId%3D{subdomain}%26siteType%3Dunilodge%26fromDate%3D{CHECKIN_DATE}%26toDate%3D2026-07-16&"
+           f"initialQueryString=searchType%3DProperty%26searchId%3D{subdomain}%26siteType%3Dunilodge%26fromDate%3D{from_date}%26toDate%3D{next_day}&"
            f"initialSearchType=Property&"
            f"initialSearchId={subdomain}&"
            f"fixedStayId={stay_id}&"
@@ -117,35 +107,46 @@ def parse_jsonld(html):
     return None
 
 
-def check_intake_availability(subdomain):
-    """Check which intake months are selectable in the booking date picker.
-    Looks at the booking choices page to find the maximum selectable date
-    (data-maxstart) across ALL stay periods. If ANY stay period allows selecting
-    dates >= a month's start, that intake is considered available.
+def parse_stay_periods(html):
+    """Extract all stay periods (租期/contracts) from the booking choices page.
 
-    Returns {"august": bool, "september": bool}.
+    Each `.choicesRate` div carries a name (data-stayperiod) and a radio
+    `fixedStayId` value, plus a `.choicesDatepicker` whose data attributes
+    describe the check-in window (data-min → data-maxstart) and checkout
+    window (data-minend → data-max).
+
+    Returns a list of dicts:
+      {name, stay_id, checkin_min, checkin_max, checkout_min, checkout_max}
     """
-    try:
-        url = (f"{BASE_URL}/bookingChoicesProperties.html?"
-               f"searchType=Property&"
-               f"searchId={subdomain}&"
-               f"siteType=unilodge&"
-               f"fromDate=2026-07-15&"
-               f"toDate=2026-07-16&"
-               f"promoCode=AUHOME")
-        html = fetch_url(url)
+    periods = []
+    for m in re.finditer(r'<div class="choicesRate choicesRateType\d+"[^>]*data-stayperiod="([^"]*)"', html):
+        name = m.group(1).strip()
+        block = html[m.start():m.start() + 4500]
+        stay_m = re.search(r'name="fixedStayId"[^>]*value="(\d+)"', block)
+        dp_m = re.search(r'class="choicesDatepicker"[^>]*>', block)
+        if not stay_m or not dp_m:
+            continue
+        dp = dp_m.group(0)
 
-        # Find ALL data-maxstart values across all stay periods
-        maxstart_dates = re.findall(r'data-maxstart="([^"]*)"', html)
+        def _g(attr):
+            mm = re.search(attr + r'="(\d{4}-\d{2}-\d{2})"', dp)
+            return mm.group(1) if mm else ""
 
-        return {
-            "august": any(ms >= "2026-08-01" for ms in maxstart_dates),
-            "september": any(ms >= "2026-09-01" for ms in maxstart_dates),
-        }
-    except Exception as e:
-        print(f"      Intake check error: {e}")
-
-    return {"august": False, "september": False}
+        cin_min = _g('data-min')
+        cin_max = _g('data-maxstart')
+        cout_min = _g('data-minend')
+        cout_max = _g('data-max')
+        if not cin_min or not cin_max:
+            continue
+        periods.append({
+            "name": name,
+            "stay_id": stay_m.group(1),
+            "checkin_min": cin_min,
+            "checkin_max": cin_max,
+            "checkout_min": cout_min,
+            "checkout_max": cout_max,
+        })
+    return periods
 
 
 def parse_grid(html):
@@ -183,21 +184,17 @@ def parse_grid(html):
 def parse_availability_counts(html):
     """Extract room availability counts from the agent-view badges.
     Badges look like: <b style=...>10+&nbsp;Available</b> or <b...>Waitlist Only</b>
-    Strategy: find each room by its radio input value (ROOMID_RATEID), then
-    look ahead for the nearest availability badge.
     Returns dict: room_id -> int (count)
     """
     results = {}
 
-    # Find all room identifiers: value="ROOMID_RATEID"
     room_positions = []
     for m in re.finditer(r'value="(\d+)_(\d+)"', html):
         room_id = m.group(1)
-        if room_id not in results:  # first occurrence per room
+        if room_id not in results:
             room_positions.append((m.start(), room_id))
-            results[room_id] = 0  # default
+            results[room_id] = 0
 
-    # Find all availability badges with their positions
     badge_pattern = re.compile(r'<b[^>]*style="[^"]*"[^>]*>([^<]+)</b>')
     badge_positions = []
     for m in badge_pattern.finditer(html):
@@ -209,13 +206,9 @@ def parse_availability_counts(html):
         elif 'Waitlist' in text:
             badge_positions.append((m.start(), 0))
 
-    # Match each badge to the nearest preceding room_id
-    # Badges appear AFTER the room radio input in the HTML
     badge_idx = 0
     for room_pos, room_id in room_positions:
-        # Find the first badge after this room position but before the next room
         next_room_pos = room_positions[room_positions.index((room_pos, room_id)) + 1][0] if (room_pos, room_id) != room_positions[-1] else len(html)
-
         for badge_pos, count in badge_positions[badge_idx:]:
             if room_pos < badge_pos < next_room_pos:
                 results[room_id] = count
@@ -264,6 +257,20 @@ def safe_attr(s):
     return re.sub(r'["<>]', ' ', str(s))
 
 
+def contract_slug(name):
+    """Stable slug for a stay-period name (used as JS/data-attr key)."""
+    return re.sub(r'[^a-zA-Z0-9]+', '-', str(name)).strip('-').lower()
+
+
+def fmt_cn_date(iso):
+    """'2026-08-19' -> '8月19日'"""
+    try:
+        d = datetime.strptime(iso, "%Y-%m-%d")
+        return f"{d.month}月{d.day}日"
+    except Exception:
+        return iso
+
+
 CAT_ORDER = [
     "Studio", "Studio Twin Share",
     "1 Bedroom", "2 Bedroom",
@@ -276,25 +283,25 @@ CAT_ORDER = [
 # ===== Main Fetcher =====
 
 def fetch_property_data(prop_name, prop_config):
-    """Fetch all room data for one property."""
-    print(f"  [{prop_name}] Fetching...")
+    """Fetch all stay periods (租期) and their rooms for one property."""
+    print(f"  [{prop_name}] Fetching stay periods...")
     subdomain = prop_config["subdomain"]
-    all_contracts = {}
+    choices_url = (f"{BASE_URL}/bookingChoicesProperties.html?"
+                   f"searchType=Property&searchId={subdomain}&siteType=unilodge&"
+                   f"fromDate={SEARCH_DATE}&toDate=2026-07-16&promoCode=AUHOME")
+    choices_html = fetch_url(choices_url)
+    periods = parse_stay_periods(choices_html)
+    print(f"    Found {len(periods)} stay periods")
 
-    # Check August/September availability based on website date picker UI (data-maxstart)
-    intake = check_intake_availability(subdomain)
-    aug_supported = intake["august"]
-    sept_supported = intake["september"]
-    print(f"    August start: {'YES' if aug_supported else 'NO'}, September start: {'YES' if sept_supported else 'NO'}")
-
-    for contract_name, contract_info in prop_config["contracts"].items():
-        stay_id = contract_info["stay_id"]
-        from_date = contract_info["from"]
-        to_date = contract_info["to"]
-
-        print(f"    - {contract_name} (stay {stay_id})...")
+    stay_data = {}
+    for p in periods:
+        name = p["name"]
+        stay_id = p["stay_id"]
+        cin = p["checkin_min"]
+        cout = p["checkout_min"] or p["checkin_min"]
+        print(f"    - {name} (stay {stay_id}, 起租 {cin}~{p['checkin_max']})")
         try:
-            html = fetch_room_details(subdomain, stay_id, from_date, to_date)
+            html = fetch_room_details(subdomain, stay_id, cin, cout)
         except Exception as e:
             print(f"      ERROR: {e}")
             continue
@@ -340,8 +347,6 @@ def fetch_property_data(prop_name, prop_config):
                 short_title = grid_info.get("short_title", room_name)
                 grid_price = grid_info.get("price", 0)
                 room_count = counts.get(room_id, 0)
-                august_ok = aug_supported
-                september_ok = sept_supported
 
                 rooms.append({
                     "id": room_id,
@@ -360,15 +365,19 @@ def fetch_property_data(prop_name, prop_config):
                     "is_waitlist": is_waitlist,
                     "grid_price": grid_price,
                     "room_count": room_count,
-                    "august_available": august_ok,
-                    "september_available": september_ok,
                     "category": get_category(room_name),
                 })
 
         rooms.sort(key=lambda r: r["weekly_price"])
-        all_contracts[contract_name] = rooms
+        stay_data[name] = {
+            "checkin_min": p["checkin_min"],
+            "checkin_max": p["checkin_max"],
+            "checkout_min": p["checkout_min"],
+            "checkout_max": p["checkout_max"],
+            "rooms": rooms,
+        }
 
-    return all_contracts
+    return stay_data
 
 
 # ===== Persistence (new / price-drop tracking) =====
@@ -390,9 +399,9 @@ def save_previous_data(all_data):
     rooms = {}
     for prop_name, contracts in all_data.items():
         slug = PROPERTIES[prop_name]["slug"]
-        for cname, room_list in contracts.items():
-            cslug = cname.replace(' ', '-').lower()
-            for r in room_list:
+        for cname, stay in contracts.items():
+            cslug = contract_slug(cname)
+            for r in stay["rooms"]:
                 key = f"{slug}:{cslug}:{r['id']}"
                 rooms[key] = {
                     "weekly_price": r.get("weekly_price", 0),
@@ -414,6 +423,26 @@ def generate_html(all_data):
     prop_order = ["Brisbane City", "Park Central", "South Bank", "Toowong"]
     prop_slugs = {p: PROPERTIES[p]["slug"] for p in prop_order}
 
+    # ---- Build the global check-in date dropdown (union of all windows) ----
+    all_dates = set()
+    for prop_name in prop_order:
+        if prop_name not in all_data:
+            continue
+        for stay in all_data[prop_name].values():
+            try:
+                d1 = datetime.strptime(stay["checkin_min"], "%Y-%m-%d")
+                d2 = datetime.strptime(stay["checkin_max"], "%Y-%m-%d")
+                cur = d1
+                while cur <= d2:
+                    all_dates.add(cur)
+                    cur += timedelta(days=1)
+            except Exception:
+                pass
+    date_options = "".join(
+        f'<option value="{d.strftime("%Y-%m-%d")}">{fmt_cn_date(d.strftime("%Y-%m-%d"))}</option>'
+        for d in sorted(all_dates)
+    )
+
     # ---- Build property tabs ----
     prop_tabs_html = ""
     for i, prop_name in enumerate(prop_order):
@@ -421,11 +450,8 @@ def generate_html(all_data):
             continue
         slug = prop_slugs[prop_name]
         active = " active" if i == 0 else ""
-        total_rooms = sum(
-            len(contract_rooms)
-            for contract_rooms in all_data[prop_name].values()
-        ) // max(1, len(all_data[prop_name]))
-        prop_tabs_html += f"""<button class="prop-btn{active}" data-slug="{slug}" onclick="switchProp('{slug}')">{prop_name}<span class="count">{total_rooms}</span></button>
+        stay_count = len(all_data[prop_name])
+        prop_tabs_html += f"""<button class="prop-btn{active}" data-slug="{slug}" onclick="switchProp('{slug}')">{prop_name}<span class="count">{stay_count} 租期</span></button>
         """
 
     # ---- Build property panels ----
@@ -434,64 +460,56 @@ def generate_html(all_data):
         if prop_name not in all_data:
             continue
         slug = prop_slugs[prop_name]
-        prop_config = PROPERTIES[prop_name]
         active = " active" if i == 0 else ""
         contract_data = all_data[prop_name]
 
         # Contract sub-tabs
-        contract_names = list(contract_data.keys())
         sub_tabs_html = ""
-        for j, cname in enumerate(contract_names):
+        for j, (cname, stay) in enumerate(contract_data.items()):
             c_active = " active" if j == 0 else ""
-            sub_tabs_html += f"""<button class="sub-tab{c_active}" data-contract="{cname}" data-prop="{slug}" onclick="switchContract('{slug}','{cname}')">{cname}<span class="count">{len(contract_data[cname])}</span></button>
+            cslug = contract_slug(cname)
+            cin_min = stay["checkin_min"]
+            cin_max = stay["checkin_max"]
+            nrooms = len(stay["rooms"])
+            sub_tabs_html += f"""<button class="sub-tab{c_active}" data-contract="{cslug}" data-prop="{slug}" data-window-min="{cin_min}" data-window-max="{cin_max}" title="{safe_attr(cname)} · 起租 {fmt_cn_date(cin_min)}~{fmt_cn_date(cin_max)}" onclick="switchContract('{slug}','{cslug}')">{safe_attr(cname)}<span class="count">{nrooms}</span></button>
             """
 
         # Contract panels
         contract_panels_html = ""
-        for j, cname in enumerate(contract_names):
+        for j, (cname, stay) in enumerate(contract_data.items()):
             c_active = " active" if j == 0 else ""
-            rooms = contract_data[cname]
+            cslug = contract_slug(cname)
+            cin_min = stay["checkin_min"]
+            cin_max = stay["checkin_max"]
+            cout_min = stay["checkout_min"]
+            rooms = stay["rooms"]
             avail = sum(1 for r in rooms if not r["is_waitlist"])
             wl = sum(1 for r in rooms if r["is_waitlist"])
 
-            key = f"{slug}-{cname.replace(' ', '-').lower()}"
+            key = f"{slug}-{cslug}"
 
             # Group by category
             cats = {}
             for r in rooms:
                 cat = r["category"]
-                if cat not in cats:
-                    cats[cat] = []
-                cats[cat].append(r)
-
-            # Find contract dates from config
-            contract_info = prop_config["contracts"].get(cname, {})
-            c_from = contract_info.get("from", CHECKIN_DATE)
-            c_to = contract_info.get("to", "")
+                cats.setdefault(cat, []).append(r)
 
             rows_html = ""
             for cat in CAT_ORDER:
                 if cat not in cats:
                     continue
-                rows_html += f"""<tr class="cat-divider"><td colspan="9"><span class="cat-label">{cat}</span></td></tr>"""
+                rows_html += f"""<tr class="cat-divider"><td colspan="6"><span class="cat-label">{cat}</span></td></tr>"""
                 for room in cats[cat]:
-                    wl = room["is_waitlist"]
-                    rc = "row-ok" if not wl else "row-warn"
-                    tc = "tag-ok" if not wl else "tag-warn"
-                    tt = "有房" if not wl else "等位"
+                    wl_room = room["is_waitlist"]
+                    rc = "row-ok" if not wl_room else "row-warn"
+                    tc = "tag-ok" if not wl_room else "tag-warn"
+                    tt = "有房" if not wl_room else "等位"
                     count_val = room.get("room_count", 0)
-                    if wl:
+                    if wl_room:
                         inventory_cell = f'<span class="tag {tc}">{tt}</span>'
                     else:
-                        if count_val >= 10:
-                            count_str = f"{count_val}+"
-                        else:
-                            count_str = str(count_val)
+                        count_str = f"{count_val}+" if count_val >= 10 else str(count_val)
                         inventory_cell = f'<span class="count-num">{count_str}</span> <span class="tag {tc}">{tt}</span>'
-                    aug_ok = room.get("august_available", False)
-                    sept_ok = room.get("september_available", False)
-                    aug_display = '<span style="color:var(--green);font-weight:600">是</span>' if aug_ok else '<span style="color:var(--text-muted)">否</span>'
-                    sept_display = '<span style="color:var(--green);font-weight:600">是</span>' if sept_ok else '<span style="color:var(--red);font-weight:600">否</span>'
 
                     price_badges = ""
                     if room.get("is_new"):
@@ -501,11 +519,9 @@ def generate_html(all_data):
 
                     search_text = safe_attr(f"{room['name']} {room['short_title']} {room['category']} {room['occupancy']}人").lower()
                     cat_key = category_key(room["category"])
-                    avail_key = "1" if not wl else "0"
-                    aug_key = "1" if aug_ok else "0"
-                    sept_key = "1" if sept_ok else "0"
+                    avail_key = "1" if not wl_room else "0"
 
-                    rows_html += f"""<tr class="{rc}" data-search="{search_text}" data-cat="{cat_key}" data-avail="{avail_key}" data-price="{room['weekly_price']}" data-bed="{room['occupancy']}" data-days="{room['days']}" data-total="{room['total_price']}" data-name="{safe_attr(room['name'])}" data-aug="{aug_key}" data-sept="{sept_key}"><td><span class="room-name">{room['name']}</span></td><td>{room['occupancy']}人</td><td><span class="price">${room['weekly_price']:,}</span>{price_badges}</td><td><span class="price">${room['total_price']:,.2f}</span></td><td>{room['days']}天</td><td>{inventory_cell}</td><td>{aug_display}</td><td>{sept_display}</td><td>{c_from}</td></tr>"""
+                    rows_html += f"""<tr class="{rc}" data-search="{search_text}" data-cat="{cat_key}" data-avail="{avail_key}" data-price="{room['weekly_price']}" data-bed="{room['occupancy']}" data-days="{room['days']}" data-total="{room['total_price']}" data-name="{safe_attr(room['name'])}"><td><span class="room-name">{room['name']}</span></td><td>{room['occupancy']}人</td><td><span class="price">${room['weekly_price']:,}</span>{price_badges}</td><td><span class="price">${room['total_price']:,.2f}</span></td><td>{room['days']}天</td><td>{inventory_cell}</td></tr>"""
 
             filter_bar = f"""
                 <div class="filter-bar" data-key="{key}">
@@ -532,16 +548,19 @@ def generate_html(all_data):
                     <span class="f-count" id="count-{key}"></span>
                 </div>"""
 
+            cin_disp = f"{fmt_cn_date(cin_min)} ~ {fmt_cn_date(cin_max)}"
+            cout_disp = fmt_cn_date(cout_min) if cout_min else "—"
+
             contract_panels_html += f"""
-                <div class="sub-panel{c_active}" data-contract="{cname}" data-prop="{slug}" data-key="{key}">
+                <div class="sub-panel{c_active}" data-contract="{cslug}" data-prop="{slug}" data-key="{key}" data-window-min="{cin_min}" data-window-max="{cin_max}">
                     {filter_bar}
                     <div class="table-wrap fade-in">
                         <table>
-                            <thead><tr><th class="sortable" data-sort="name" onclick="sortTable('{key}','name','text')">房型 <span class="sort-arrow"></span></th><th class="sortable" data-sort="bed" onclick="sortTable('{key}','bed','num')">入住 <span class="sort-arrow"></span></th><th class="sortable" data-sort="price" onclick="sortTable('{key}','price','num')">周租金 <span class="sort-arrow"></span></th><th class="sortable" data-sort="total" onclick="sortTable('{key}','total','num')">总租金 (含GST) <span class="sort-arrow"></span></th><th class="sortable" data-sort="days" onclick="sortTable('{key}','days','num')">合同期 <span class="sort-arrow"></span></th><th>库存</th><th class="sortable" data-sort="aug" onclick="sortTable('{key}','aug','num')">8月份 <span class="sort-arrow"></span></th><th class="sortable" data-sort="sept" onclick="sortTable('{key}','sept','num')">9月份 <span class="sort-arrow"></span></th><th>起租日期</th></tr></thead>
+                            <thead><tr><th class="sortable" data-sort="name" onclick="sortTable('{key}','name','text')">房型 <span class="sort-arrow"></span></th><th class="sortable" data-sort="bed" onclick="sortTable('{key}','bed','num')">入住 <span class="sort-arrow"></span></th><th class="sortable" data-sort="price" onclick="sortTable('{key}','price','num')">周租金 <span class="sort-arrow"></span></th><th class="sortable" data-sort="total" onclick="sortTable('{key}','total','num')">总租金 (含GST) <span class="sort-arrow"></span></th><th class="sortable" data-sort="days" onclick="sortTable('{key}','days','num')">合同期 <span class="sort-arrow"></span></th><th>库存</th></tr></thead>
                             <tbody>{rows_html}</tbody>
                         </table>
                     </div>
-                    <div class="panel-summary">📅 {c_from} → {c_to} &ensp;|&ensp; 共 {len(rooms)} 种房型 &ensp;|&ensp; <span class="stat-ok">可预订 {avail}</span> &ensp;|&ensp; <span class="stat-warn">等位 {wl}</span></div>
+                    <div class="panel-summary">📅 起租 <b>{cin_disp}</b> · 退租 {cout_disp} &ensp;|&ensp; 共 {len(rooms)} 种房型 &ensp;|&ensp; <span class="stat-ok">可预订 {avail}</span> &ensp;|&ensp; <span class="stat-warn">等位 {wl}</span></div>
                 </div>"""
 
         panels_html += f"""
@@ -551,18 +570,21 @@ def generate_html(all_data):
     </div>"""
 
     # ---- Summary stats ----
+    total_stays = 0
+    total_entries = 0
     total_avail = 0
     total_wl = 0
-    total_types = 0
     prop_count = 0
     for prop_name in prop_order:
         if prop_name not in all_data:
             continue
         prop_count += 1
-        first_contract = list(all_data[prop_name].values())[0] if all_data[prop_name] else []
-        total_avail += sum(1 for r in first_contract if not r["is_waitlist"])
-        total_wl += sum(1 for r in first_contract if r["is_waitlist"])
-        total_types += len(first_contract)
+        for stay in all_data[prop_name].values():
+            total_stays += 1
+            rooms = stay["rooms"]
+            total_entries += len(rooms)
+            total_avail += sum(1 for r in rooms if not r["is_waitlist"])
+            total_wl += sum(1 for r in rooms if r["is_waitlist"])
 
     # ---- Full HTML ----
     html = f"""<!DOCTYPE html>
@@ -606,6 +628,14 @@ def generate_html(all_data):
     .header h1 .dot {{ width: 10px; height: 10px; border-radius: 50%; background: #E21836; flex-shrink: 0; }}
     .header .meta {{ color: var(--text-muted); font-size: 0.8rem; line-height: 1.7; }}
 
+    /* Check-in date picker */
+    .date-picker {{ display: flex; align-items: center; gap: 12px; margin-top: 16px; flex-wrap: wrap; background: var(--card-bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; }}
+    .date-picker label {{ font-size: 0.9rem; font-weight: 700; color: var(--text); }}
+    .date-picker .hint {{ font-size: 0.78rem; color: var(--text-muted); }}
+    .date-picker select {{ padding: 9px 14px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-family: var(--font); font-size: 0.9rem; font-weight: 600; outline: none; cursor: pointer; min-width: 150px; }}
+    .date-picker select:focus {{ border-color: var(--text-muted); }}
+    #date-match {{ font-size: 0.82rem; color: var(--green); font-weight: 700; }}
+
     /* Property nav */
     .prop-nav {{ display: flex; gap: 6px; margin-bottom: 22px; overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none; }}
     .prop-nav::-webkit-scrollbar {{ display: none; }}
@@ -615,7 +645,8 @@ def generate_html(all_data):
     .prop-btn .count {{ font-size: 0.68rem; opacity: 0.5; margin-left: 3px; font-weight: 400; }}
 
     /* Sub tabs */
-    .sub-tabs {{ display: flex; gap: 4px; margin-bottom: 16px; background: var(--card-bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 4px; width: fit-content; }}
+    .sub-tabs {{ display: flex; gap: 4px; margin-bottom: 16px; background: var(--card-bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 4px; width: fit-content; max-width: 100%; overflow-x: auto; scrollbar-width: none; }}
+    .sub-tabs::-webkit-scrollbar {{ display: none; }}
     .sub-tab {{ padding: 7px 16px; border-radius: 7px; cursor: pointer; font-size: 0.83rem; font-weight: 500; color: var(--text-muted); border: none; background: none; font-family: var(--font); transition: all 200ms cubic-bezier(0.32,0.72,0,1); white-space: nowrap; }}
     .sub-tab:hover {{ color: var(--text); }}
     .sub-tab.active {{ background: var(--bg); color: var(--text); box-shadow: 0 1px 3px rgba(0,0,0,0.06); }}
@@ -678,8 +709,10 @@ def generate_html(all_data):
     .prop-panel.active {{ display: block; }}
     .sub-panel {{ display: none; }}
     .sub-panel.active {{ display: block; }}
+    .date-hidden {{ display: none !important; }}
 
     .panel-summary {{ margin-top: 12px; font-size: 0.8rem; color: var(--text-muted); }}
+    .panel-summary b {{ color: var(--text); }}
     .stat-ok {{ color: var(--green); font-weight: 600; }}
     .stat-warn {{ color: var(--amber); font-weight: 600; }}
 
@@ -710,7 +743,16 @@ def generate_html(all_data):
     <div class="header-top">
         <h1><span class="dot"></span>UniLodge Queensland 空房日报</h1>
     </div>
-    <p class="meta">📍 Brisbane, Queensland — {prop_count} 所公寓 &ensp;|&ensp; 更新于 {update_time_display} &ensp;|&ensp; 🎯 起租: {CHECKIN_DATE} &ensp;|&ensp; 每日 10:00 / 15:00 自动刷新</p>
+    <p class="meta">📍 Brisbane, Queensland — {prop_count} 所公寓 &ensp;|&ensp; 更新于 {update_time_display} &ensp;|&ensp; 每日 10:00 / 15:00 自动刷新</p>
+    <div class="date-picker">
+        <label for="checkin-date">🎯 学生起租日</label>
+        <select id="checkin-date" onchange="filterByDate(this.value)">
+            <option value="all" selected>全部租期（不限日期）</option>
+            {date_options}
+        </select>
+        <span class="hint">选择起租日期，自动匹配所有适合该日起租的租约</span>
+        <span id="date-match"></span>
+    </div>
 </div>
 
 <nav class="prop-nav fade-in" style="animation-delay:60ms" id="prop-nav">{prop_tabs_html}</nav>
@@ -723,9 +765,9 @@ def generate_html(all_data):
             <h3>房源概况</h3>
             <ul>
                 <li>{prop_count} 所 UniLodge Queensland 公寓</li>
-                <li>共 {total_types} 种房型 (Full Year)</li>
+                <li>共 {total_stays} 个租期（Full Year / Half Year / 学期合同等）</li>
+                <li>共 {total_entries} 个房型×租期组合</li>
                 <li>可预订 {total_avail} · 等位 {total_wl}</li>
-                <li>起租日期统一为 {CHECKIN_DATE}</li>
             </ul>
         </div>
         <div class="footer-card">
@@ -733,7 +775,7 @@ def generate_html(all_data):
             <ul>
                 <li>价格均为澳元 (AUD)，已含 GST</li>
                 <li>候补（等位）= 当前无房，可排队等待</li>
-                <li>Full Year 和 Half Year 为固定学期合同</li>
+                <li>上方选择起租日后，自动匹配可入住的租约</li>
                 <li>周租金为总价÷合同天数×7估算</li>
             </ul>
         </div>
@@ -759,8 +801,7 @@ function switchProp(slug) {{
     var panel = document.getElementById('prop-' + slug);
     if (panel) {{
         panel.classList.add('active');
-        // Activate first sub-tab
-        var firstSub = panel.querySelector('.sub-tab');
+        var firstSub = panel.querySelector('.sub-tab:not(.date-hidden)');
         if (firstSub) firstSub.click();
     }}
 }}
@@ -774,6 +815,33 @@ function switchContract(propSlug, contractName) {{
     if (subBtn) subBtn.classList.add('active');
     var subPanel = panel.querySelector('.sub-panel[data-contract="' + contractName + '"]');
     if (subPanel) subPanel.classList.add('active');
+}}
+
+function filterByDate(date) {{
+    document.querySelectorAll('.sub-tab').forEach(function(t) {{
+        var mn = t.getAttribute('data-window-min'), mx = t.getAttribute('data-window-max');
+        var show = (date === 'all') || (date >= mn && date <= mx);
+        t.classList.toggle('date-hidden', !show);
+    }});
+    document.querySelectorAll('.sub-panel').forEach(function(p) {{
+        var mn = p.getAttribute('data-window-min'), mx = p.getAttribute('data-window-max');
+        var show = (date === 'all') || (date >= mn && date <= mx);
+        p.classList.toggle('date-hidden', !show);
+    }});
+    document.querySelectorAll('.prop-panel').forEach(function(pp) {{
+        var vis = pp.querySelectorAll('.sub-panel:not(.date-hidden)').length;
+        pp.classList.toggle('date-hidden', vis === 0);
+        var btn = document.querySelector('.prop-btn[data-slug="' + pp.id.replace('prop-', '') + '"]');
+        if (btn) btn.classList.toggle('date-hidden', vis === 0);
+        var active = pp.querySelector('.sub-tab.active');
+        if (!active || active.classList.contains('date-hidden')) {{
+            var first = pp.querySelector('.sub-tab:not(.date-hidden)');
+            if (first) first.click();
+        }}
+    }});
+    var total = document.querySelectorAll('.sub-panel:not(.date-hidden)').length;
+    var c = document.getElementById('date-match');
+    if (c) c.textContent = (date === 'all') ? '' : ('匹配 ' + total + ' 个租约');
 }}
 
 var __fs = {{}};
@@ -910,11 +978,10 @@ def main():
             data = fetch_property_data(prop_name, prop_config)
             if data:
                 all_data[prop_name] = data
-                first_contract = list(data.keys())[0] if data else ""
-                room_count = len(data[first_contract]) if first_contract else 0
-                avail = sum(1 for r in data[first_contract] if not r["is_waitlist"])
-                wl = sum(1 for r in data[first_contract] if r["is_waitlist"])
-                print(f"  ✓ {prop_name}: {room_count} types, {avail} avail, {wl} waitlist")
+                stays = len(data)
+                first_stay = list(data.values())[0] if data else {"rooms": []}
+                room_count = len(first_stay["rooms"])
+                print(f"  ✓ {prop_name}: {stays} stay periods, {room_count} types in first period")
             else:
                 print(f"  ✗ {prop_name}: No data")
         except Exception as e:
@@ -932,9 +999,9 @@ def main():
     drop_count = 0
     for prop_name in all_data:
         slug = PROPERTIES[prop_name]["slug"]
-        for cname, room_list in all_data[prop_name].items():
-            cslug = cname.replace(' ', '-').lower()
-            for r in room_list:
+        for cname, stay in all_data[prop_name].items():
+            cslug = contract_slug(cname)
+            for r in stay["rooms"]:
                 key = f"{slug}:{cslug}:{r['id']}"
                 price = r.get("weekly_price", 0)
                 if key in previous:
